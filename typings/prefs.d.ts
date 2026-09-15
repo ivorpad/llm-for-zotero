@@ -33,6 +33,8 @@ declare namespace _ZoteroTypes {
       "enableClaudeCodeMode": boolean;
       "agentBackendBridgeUrl": string;
       "agentClaudeConfigSource": string;
+      "claudeCodeRuntime": string;
+      "claudeCodeCliPath": string;
       "agentPermissionMode": string;
       "claudeCodePermissionMode": string;
       "claudeCodePermissionModeMigrationDone": boolean;

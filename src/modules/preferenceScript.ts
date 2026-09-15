@@ -211,6 +211,8 @@ import { getRuntimePlatformInfo } from "../utils/runtimePlatform";
 import {
   getClaudeAutoCompactThresholdPercent,
   getClaudeBridgeUrl,
+  getClaudeCliPathPref,
+  getClaudeCodeRuntimePref,
   getClaudeConfigSourcePref,
   getClaudeManagedInstructionTemplatePref,
   getClaudePermissionModePref,
@@ -226,6 +228,8 @@ import {
   setClaudeAutoCompactEnabled,
   setClaudeAutoCompactThresholdPercent,
   setClaudeBridgeUrl,
+  setClaudeCliPathPref,
+  setClaudeCodeRuntimePref,
   setClaudeManagedInstructionTemplatePref,
   setClaudePermissionModePref,
   setClaudeReasoningModePref,
@@ -3020,6 +3024,12 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
   const agentClaudeConfigSourceSelect = doc.querySelector(
     `#${config.addonRef}-agent-claude-config-source`,
   ) as HTMLSelectElement | null;
+  const claudeCodeRuntimeSelect = doc.querySelector(
+    `#${config.addonRef}-claude-code-runtime`,
+  ) as HTMLSelectElement | null;
+  const claudeCodeCliPathInput = doc.querySelector(
+    `#${config.addonRef}-claude-code-cli-path`,
+  ) as HTMLInputElement | null;
   const originalAgentPermissionModeSelect = doc.querySelector(
     `#${config.addonRef}-original-agent-permission-mode`,
   ) as HTMLSelectElement | null;
@@ -4286,6 +4296,33 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
     });
   }
   renderClaudeConfigPaths();
+
+  if (claudeCodeRuntimeSelect) {
+    claudeCodeRuntimeSelect.value = getClaudeCodeRuntimePref();
+    claudeCodeRuntimeSelect.addEventListener("change", () => {
+      setClaudeCodeRuntimePref(
+        claudeCodeRuntimeSelect.value === "direct" ? "direct" : "bridge",
+      );
+      claudeCodeRuntimeSelect.value = getClaudeCodeRuntimePref();
+      void refreshClaudeModelSuggestions(true, true);
+      void refreshClaudePermissionOptions();
+      refreshAgentRowSummaries();
+    });
+  }
+
+  if (claudeCodeCliPathInput) {
+    claudeCodeCliPathInput.value = getClaudeCliPathPref();
+    const commitClaudeCliPath = () => {
+      setClaudeCliPathPref(claudeCodeCliPathInput.value);
+      claudeCodeCliPathInput.value = getClaudeCliPathPref();
+      void refreshClaudeModelSuggestions(true, true);
+    };
+    claudeCodeCliPathInput.addEventListener("change", commitClaudeCliPath);
+    claudeCodeCliPathInput.addEventListener("blur", commitClaudeCliPath);
+    claudeCodeCliPathInput.addEventListener("input", () => {
+      setClaudeCliPathPref(claudeCodeCliPathInput.value);
+    });
+  }
 
   if (claudeConfigDocLink) {
     claudeConfigDocLink.addEventListener("click", (event) => {

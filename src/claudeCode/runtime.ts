@@ -41,6 +41,7 @@ import {
 import type { StoredChatMessage } from "../utils/chatStore";
 import {
   getClaudeBridgeUrl,
+  getClaudeCodeRuntimePref,
   getClaudePermissionModePref,
   getClaudeReasoningModePref,
   getClaudeRuntimeModelPref,
@@ -65,6 +66,10 @@ import {
   withConversationWriteLock,
 } from "../shared/conversationWriteFence";
 import { getClaudeProfileSignature } from "./projectSkills";
+import {
+  createClaudeDirectRuntime,
+  type ClaudeDirectRuntime,
+} from "./directRuntime";
 import {
   buildClaudeRuntimeModelEntries,
   type ClaudeModelCatalog,
@@ -107,6 +112,8 @@ const conversationScopeCache = new Map<number, ClaudeBridgeScope>();
 const conversationScopeIdentityCache = new Map<number, string>();
 let bridgeRuntimeCache: AgentRuntimeLike | null = null;
 let bridgeRuntimeCoreRef: AgentRuntime | null = null;
+let directRuntimeCache: ClaudeDirectRuntime | null = null;
+let directRuntimeCoreRef: AgentRuntime | null = null;
 
 function getBridgeUrl(): string {
   return getClaudeBridgeUrl();
@@ -219,13 +226,32 @@ export function forgetClaudeConversationScope(
 export function resetClaudeBridgeRuntime(): void {
   bridgeRuntimeCache = null;
   bridgeRuntimeCoreRef = null;
+  const direct = directRuntimeCache;
+  directRuntimeCache = null;
+  directRuntimeCoreRef = null;
   conversationScopeCache.clear();
   conversationScopeIdentityCache.clear();
+  // Zotero is quitting or the subsystem is restarting: every CLI process the
+  // direct runtime owns has to die with it, so dropping the cache is not
+  // enough.
+  void direct?.dispose();
+}
+
+function getClaudeDirectRuntime(coreRuntime: AgentRuntime): AgentRuntimeLike {
+  if (!directRuntimeCache || directRuntimeCoreRef !== coreRuntime) {
+    void directRuntimeCache?.dispose();
+    directRuntimeCache = createClaudeDirectRuntime({ coreRuntime });
+    directRuntimeCoreRef = coreRuntime;
+  }
+  return directRuntimeCache;
 }
 
 export function getClaudeBridgeRuntime(
   coreRuntime: AgentRuntime,
 ): AgentRuntimeLike {
+  if (getClaudeCodeRuntimePref() === "direct") {
+    return getClaudeDirectRuntime(coreRuntime);
+  }
   if (!bridgeRuntimeCache || bridgeRuntimeCoreRef !== coreRuntime) {
     bridgeRuntimeCache = createExternalBackendBridgeRuntime({
       coreRuntime,
