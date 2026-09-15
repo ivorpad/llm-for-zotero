@@ -32,6 +32,8 @@ const LAYERS = [
       // Shared value/type vocabulary and low-level helpers.
       "src/shared/",
       "src/utils/",
+      // Claude Code direct-CLI wire protocol and session; imports utils only.
+      "src/claudeCodeDirect/",
       // Pure Codex catalog-selection logic.
       "src/codex/",
       // Codex credential and model-catalog storage.
