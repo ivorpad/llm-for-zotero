@@ -4,6 +4,7 @@ import {
   createClaudeDirectRuntime,
   toClaudeDirectPermissionMode,
 } from "../src/claudeCode/directRuntime";
+import type { ClaudeDirectMcpDeps } from "../src/claudeCode/directRuntimeMcp";
 import {
   getClaudeBridgeRuntime,
   resetClaudeBridgeRuntime,
@@ -212,7 +213,7 @@ function buildRequest(conversationKey = 42) {
 
 function createRuntime(
   script: FakeSessionScript,
-  options: { closeDelayMs?: number } = {},
+  options: { closeDelayMs?: number; mcp?: Partial<ClaudeDirectMcpDeps> } = {},
 ) {
   const fakeCore = createFakeCore();
   const sessions: FakeSession[] = [];
@@ -233,8 +234,50 @@ function createRuntime(
     },
     closeDelayMs: options.closeDelayMs ?? 0,
     generateSessionId: () => "11111111-2222-3333-4444-555555555555",
+    // The real helper defaults native MCP tools to on; keep the base tests on
+    // the pre-MCP path unless a test opts in with its own fake bundle.
+    mcp: options.mcp ?? { isEnabled: () => false },
   });
   return { runtime, sessions, fakeCore };
+}
+
+/**
+ * A fully faked, MCP-enabled dependency bundle: every server helper returns a
+ * fixed value so the config, headers and scope token are known, and `clear` is
+ * a counter so a test can watch the per-turn scope come and go.
+ */
+function createEnabledMcpDeps(overrides: Partial<ClaudeDirectMcpDeps> = {}): {
+  deps: Partial<ClaudeDirectMcpDeps>;
+  getClearCount: () => number;
+  registrations: Array<{ token: string; scope: unknown }>;
+} {
+  let clearCount = 0;
+  const registrations: Array<{ token: string; scope: unknown }> = [];
+  const deps: Partial<ClaudeDirectMcpDeps> = {
+    isEnabled: () => true,
+    getProfileSignature: () => "profile-test",
+    getServerUrl: () => "http://127.0.0.1:23119/llm-for-zotero/mcp",
+    getBearerToken: () => "bearer-token-1234567890",
+    getServerName: () => "llm_for_zotero_test",
+    resolveScopeToken: () => "scope-token-xyz",
+    buildScope: (request) => ({ userText: request.userText }) as never,
+    registerScope: (scope, registerOptions) => {
+      const token = registerOptions.token || "generated-token";
+      registrations.push({ token, scope });
+      return {
+        token,
+        clear: () => {
+          clearCount += 1;
+        },
+        getState: () => scope,
+      };
+    },
+    authHeader: "Authorization",
+    scopeHeader: "X-LLM-For-Zotero-Scope",
+    safeReadToolNames: ["paper_read", "library_search"],
+    ...overrides,
+  };
+  return { deps, getClearCount: () => clearCount, registrations };
 }
 
 async function flush(): Promise<void> {
@@ -720,6 +763,115 @@ describe("Claude Code direct CLI runtime", function () {
         "Zotero actions are not available in Direct CLI mode yet",
       );
     }
+  });
+
+  it("points the CLI at the Zotero MCP server when native tools are on", async function () {
+    const mcp = createEnabledMcpDeps();
+    const { runtime, sessions } = createRuntime({}, { mcp: mcp.deps });
+
+    await runtime.runTurn({ request: buildRequest() });
+
+    const raw = sessions[0].config.mcpConfigJson;
+    assert.isString(raw);
+    assert.deepEqual(JSON.parse(raw as string), {
+      mcpServers: {
+        llm_for_zotero_test: {
+          type: "http",
+          url: "http://127.0.0.1:23119/llm-for-zotero/mcp",
+          headers: {
+            Authorization: "Bearer bearer-token-1234567890",
+            "X-LLM-For-Zotero-Scope": "scope-token-xyz",
+          },
+        },
+      },
+    });
+    // The turn registers its scope under the same conversation-stable token the
+    // header carries, so the header the session was started with stays valid.
+    assert.deepEqual(
+      mcp.registrations.map((registration) => registration.token),
+      ["scope-token-xyz"],
+    );
+  });
+
+  it("leaves the CLI mcp-config empty when native MCP tools are off", async function () {
+    const { runtime, sessions } = createRuntime(
+      {},
+      { mcp: { isEnabled: () => false } },
+    );
+
+    await runtime.runTurn({ request: buildRequest() });
+
+    assert.isUndefined(sessions[0].config.mcpConfigJson);
+  });
+
+  it("auto-allows read MCP tools but still prompts for writes and non-MCP tools", async function () {
+    const mcp = createEnabledMcpDeps();
+    const { runtime, sessions } = createRuntime(
+      {
+        events: [
+          {
+            type: "permission_request",
+            request: {
+              requestId: "read-1",
+              toolName: "mcp__llm_for_zotero_test__paper_read",
+              input: { itemId: 1 },
+              suggestions: [],
+            },
+          },
+          {
+            type: "permission_request",
+            request: {
+              requestId: "write-1",
+              toolName: "mcp__llm_for_zotero_test__note_write",
+              input: { text: "hi" },
+              suggestions: [],
+            },
+          },
+          {
+            type: "permission_request",
+            request: {
+              requestId: "tool-1",
+              toolName: "Write",
+              input: { file_path: "/data/notes.md" },
+              suggestions: [],
+            },
+          },
+        ],
+      },
+      { mcp: mcp.deps },
+    );
+
+    const events: AgentEvent[] = [];
+    await runtime.runTurn({
+      request: buildRequest(),
+      onEvent: async (event) => {
+        events.push(event);
+      },
+    });
+
+    // The read tool is answered on the wire, so it never becomes a card.
+    assert.deepEqual(sessions[0].permissionDecisions, [
+      { requestId: "read-1", decision: { behavior: "allow" } },
+    ]);
+    assert.deepEqual(
+      events
+        .filter((event) => event.type === "confirmation_required")
+        .map((event) =>
+          event.type === "confirmation_required" ? event.requestId : "",
+        ),
+      ["write-1", "tool-1"],
+    );
+  });
+
+  it("clears the per-turn MCP scope when the turn ends and when the session closes", async function () {
+    const mcp = createEnabledMcpDeps();
+    const { runtime } = createRuntime({}, { mcp: mcp.deps });
+
+    await runtime.runTurn({ request: buildRequest(7) });
+    assert.equal(mcp.getClearCount(), 1);
+
+    await runtime.invalidateSession({ conversationKey: 7 });
+    assert.equal(mcp.getClearCount(), 2);
   });
 
   it("maps the host-only permission modes to the CLI's four", function () {
