@@ -58,9 +58,9 @@ const fullConfig: ClaudeDirectSessionConfig = {
   startTimeoutMs: 5_000,
 };
 
-describe("claude direct protocol", () => {
-  describe("parseClaudeCliLine", () => {
-    it("parses and classifies every line of the plain turn capture", () => {
+describe("claude direct protocol", function () {
+  describe("parseClaudeCliLine", function () {
+    it("parses and classifies every line of the plain turn capture", function () {
       const counts = countByType(
         readClaudeDirectFixtureLines("one-word-haiku.stream.jsonl"),
       );
@@ -76,7 +76,7 @@ describe("claude direct protocol", () => {
       });
     });
 
-    it("parses the partial-message capture, stream events included", () => {
+    it("parses the partial-message capture, stream events included", function () {
       const counts = countByType(
         readClaudeDirectFixtureLines("one-word-haiku-partial.stream.jsonl"),
       );
@@ -100,18 +100,21 @@ describe("claude direct protocol", () => {
       });
     });
 
-    it("parses the permission capture, control traffic included", () => {
+    it("parses the permission capture, control traffic included", function () {
       const counts = countByType(
         readClaudeDirectFixtureLines("permission-write-haiku.stdout.jsonl"),
       );
       assert.equal(counts["control_request:can_use_tool"], 1);
       assert.equal(counts["control_response:success"], 1);
-      assert.equal(counts["stream_event:content_block_delta:input_json_delta"], 9);
+      assert.equal(
+        counts["stream_event:content_block_delta:input_json_delta"],
+        9,
+      );
       assert.equal(counts["result:success"], 1);
       assert.equal(counts.user, 1);
     });
 
-    it("returns null for blank lines and for noise the CLI writes to stdout", () => {
+    it("returns null for blank lines and for noise the CLI writes to stdout", function () {
       assert.isNull(parseClaudeCliLine(""));
       assert.isNull(parseClaudeCliLine("   \n"));
       assert.isNull(parseClaudeCliLine("Loading plugins..."));
@@ -121,8 +124,8 @@ describe("claude direct protocol", () => {
     });
   });
 
-  describe("buildClaudeCliArgs", () => {
-    it("builds the argv for a full session config", () => {
+  describe("buildClaudeCliArgs", function () {
+    it("builds the argv for a full session config", function () {
       assert.deepEqual(buildClaudeCliArgs(fullConfig), [
         "-p",
         "--output-format",
@@ -150,7 +153,7 @@ describe("claude direct protocol", () => {
       ]);
     });
 
-    it("resumes instead of opening a new session and adds the MCP flags", () => {
+    it("resumes instead of opening a new session and adds the MCP flags", function () {
       const args = buildClaudeCliArgs({
         ...fullConfig,
         resumeSessionId: "aaaa-bbbb",
@@ -162,7 +165,7 @@ describe("claude direct protocol", () => {
       assert.include(args, "--strict-mcp-config");
     });
 
-    it("passes the skip-permissions flag only in bypassPermissions mode", () => {
+    it("passes the skip-permissions flag only in bypassPermissions mode", function () {
       const bypass = buildClaudeCliArgs({
         ...fullConfig,
         permissionMode: "bypassPermissions",
@@ -193,8 +196,8 @@ describe("claude direct protocol", () => {
     });
   });
 
-  describe("serializeClaudeCliMessage", () => {
-    it("reproduces every line the client wrote in the permission capture", () => {
+  describe("serializeClaudeCliMessage", function () {
+    it("reproduces every line the client wrote in the permission capture", function () {
       const lines = readClaudeDirectFixtureLines(
         "permission-write-haiku.stdin.jsonl",
       );
@@ -206,8 +209,8 @@ describe("claude direct protocol", () => {
     });
   });
 
-  describe("createStreamAssembler", () => {
-    it("rebuilds the assistant text of the partial-message capture", () => {
+  describe("createStreamAssembler", function () {
+    it("rebuilds the assistant text of the partial-message capture", function () {
       const assembler = createStreamAssembler();
       for (const line of readClaudeDirectFixtureLines(
         "one-word-haiku-partial.stream.jsonl",
@@ -227,7 +230,7 @@ describe("claude direct protocol", () => {
       assert.isTrue(assembler.blocks().every((block) => block.stopped));
     });
 
-    it("rebuilds the Write tool input from the input_json_delta chunks", () => {
+    it("rebuilds the Write tool input from the input_json_delta chunks", function () {
       const assembler = createStreamAssembler();
       const messages = readClaudeDirectFixtureLines(
         "permission-write-haiku.stdout.jsonl",
@@ -257,12 +260,14 @@ describe("claude direct protocol", () => {
       // Two assistant messages, so the block indices repeat and the assembler
       // keeps them apart by message.
       assert.deepEqual(
-        assembler.blocks().map((block) => `${block.messageIndex}:${block.index}`),
+        assembler
+          .blocks()
+          .map((block) => `${block.messageIndex}:${block.index}`),
         ["0:0", "0:1", "1:0", "1:1"],
       );
     });
 
-    it("ignores lines that are not stream events", () => {
+    it("ignores lines that are not stream events", function () {
       const assembler = createStreamAssembler();
       assert.isNull(
         assembler.handle({ type: "keep_alive" } as ClaudeCliInboundMessage),
@@ -271,8 +276,8 @@ describe("claude direct protocol", () => {
     });
   });
 
-  describe("redactForLog", () => {
-    it("masks API keys, bearer tokens, authorization fields and long secrets", () => {
+  describe("redactForLog", function () {
+    it("masks API keys, bearer tokens, authorization fields and long secrets", function () {
       const redacted = redactForLog(
         [
           "key sk-ant-api03-ABCDEF123456-secret",
@@ -286,7 +291,10 @@ describe("claude direct protocol", () => {
       assert.notInclude(redacted, "api03");
       assert.notInclude(redacted, "abc123.def456-ghi");
       assert.notInclude(redacted, "token-value-that-is-secret");
-      assert.notInclude(redacted, "0123456789012345678901234567890123456789abcd");
+      assert.notInclude(
+        redacted,
+        "0123456789012345678901234567890123456789abcd",
+      );
       assert.notInclude(redacted, "zzz111.yyy222-xxx");
       assert.include(redacted, "sk-ant-[redacted]");
       assert.include(redacted, "Authorization: [redacted]");
@@ -295,8 +303,11 @@ describe("claude direct protocol", () => {
       assert.include(redacted, "key=[redacted]");
     });
 
-    it("leaves ordinary text and short query values alone", () => {
-      assert.equal(redactForLog("spawning claude --model haiku"), "spawning claude --model haiku");
+    it("leaves ordinary text and short query values alone", function () {
+      assert.equal(
+        redactForLog("spawning claude --model haiku"),
+        "spawning claude --model haiku",
+      );
       assert.equal(redactForLog("?key=short"), "?key=short");
       assert.equal(redactForLog(""), "");
     });

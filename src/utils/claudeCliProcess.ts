@@ -41,9 +41,9 @@ const globalLiveHandles = new Set<ClaudeCliProcessHandle>();
 
 function debugLog(message: string): void {
   try {
-    (globalThis as { Zotero?: { debug?: (text: string) => void } }).Zotero?.debug?.(
-      `[llm-for-zotero] claude cli: ${redactForLog(message)}`,
-    );
+    (
+      globalThis as { Zotero?: { debug?: (text: string) => void } }
+    ).Zotero?.debug?.(`[llm-for-zotero] claude cli: ${redactForLog(message)}`);
   } catch {
     /* logging must never break a spawn */
   }
@@ -54,7 +54,9 @@ async function loadSubprocessModule(): Promise<SubprocessLike> {
   let Subprocess: any;
   if (CU?.importESModule) {
     try {
-      const mod = CU.importESModule("resource://gre/modules/Subprocess.sys.mjs");
+      const mod = CU.importESModule(
+        "resource://gre/modules/Subprocess.sys.mjs",
+      );
       Subprocess = mod.Subprocess || mod.default || mod;
     } catch {
       /* fall through to the legacy module */
@@ -182,8 +184,12 @@ class ClaudeCliProcessHandleImpl implements ClaudeCliProcessHandle {
   private readonly registries: ReadonlyArray<Set<ClaudeCliProcessHandle>>;
   private readonly lineHandlers = new Set<(line: string) => void>();
   private readonly stderrHandlers = new Set<(text: string) => void>();
-  private readonly exitHandlers = new Set<(exit: ClaudeCliProcessExit) => void>();
-  private readonly exitWaiters = new Set<(exit: ClaudeCliProcessExit) => void>();
+  private readonly exitHandlers = new Set<
+    (exit: ClaudeCliProcessExit) => void
+  >();
+  private readonly exitWaiters = new Set<
+    (exit: ClaudeCliProcessExit) => void
+  >();
   private stdoutBuffer = "";
   private exitRecord: ClaudeCliProcessExit | null = null;
   private terminatePromise: Promise<ClaudeCliProcessExit> | null = null;
@@ -316,14 +322,13 @@ class ClaudeCliProcessHandleImpl implements ClaudeCliProcessHandle {
   private waitForExit(timeoutMs: number): Promise<ClaudeCliProcessExit | null> {
     if (this.exitRecord) return Promise.resolve(this.exitRecord);
     return new Promise((resolve) => {
-      let timer: ReturnType<typeof setTimeout> | undefined;
       const waiter = (exit: ClaudeCliProcessExit) => {
-        if (timer !== undefined) clearTimeout(timer);
+        clearTimeout(timer);
         this.exitWaiters.delete(waiter);
         resolve(exit);
       };
       this.exitWaiters.add(waiter);
-      timer = setTimeout(() => {
+      const timer = setTimeout(() => {
         this.exitWaiters.delete(waiter);
         resolve(null);
       }, timeoutMs);
@@ -485,7 +490,11 @@ function createSpawner(options: SpawnerOptions): ClaudeCliProcessSpawner {
         );
       }
       debugLog(`spawned ${launchDescription}`);
-      return new ClaudeCliProcessHandleImpl(proc, launchDescription, registries);
+      return new ClaudeCliProcessHandleImpl(
+        proc,
+        launchDescription,
+        registries,
+      );
     },
 
     liveProcesses(): readonly ClaudeCliProcessHandle[] {

@@ -75,7 +75,9 @@ class FakeHandle implements FakeClaudeHandle {
 
   private readonly lineHandlers = new Set<(line: string) => void>();
   private readonly stderrHandlers = new Set<(text: string) => void>();
-  private readonly exitHandlers = new Set<(exit: ClaudeCliProcessExit) => void>();
+  private readonly exitHandlers = new Set<
+    (exit: ClaudeCliProcessExit) => void
+  >();
   private exitRecord: ClaudeCliProcessExit | null = null;
 
   constructor(

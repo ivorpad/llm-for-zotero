@@ -75,13 +75,14 @@ async function expectDirectError(
   throw new Error(`expected the promise to reject with ${code}`);
 }
 
-describe("claude direct session", () => {
-  it("starts on the init line and completes a turn on the result line", async () => {
+describe("claude direct session", function () {
+  it("starts on the init line and completes a turn on the result line", async function () {
     const spawner = createFakeClaudeSpawner({
       binary: { path: "/opt/homebrew/bin/claude", source: "shell_lookup" },
       linesOnSpawn: partialTurn.handshake,
       onWrite: (line, handle) => {
-        if (parseLine(line).type === "user") replyLater(handle, partialTurn.turn);
+        if (parseLine(line).type === "user")
+          replyLater(handle, partialTurn.turn);
       },
     });
     const { events, subscribe } = collectEvents();
@@ -89,7 +90,10 @@ describe("claude direct session", () => {
     session.subscribe(subscribe);
 
     const started = await session.start();
-    assert.equal(started.init.session_id, "2b729401-243a-427a-9749-74ee716d3591");
+    assert.equal(
+      started.init.session_id,
+      "2b729401-243a-427a-9749-74ee716d3591",
+    );
     assert.equal(started.init.cwd, "/tmp/claude-direct-fixture");
     assert.equal(started.binary.source, "shell_lookup");
     assert.isNumber(started.pid);
@@ -108,9 +112,7 @@ describe("claude direct session", () => {
     // Every line of the capture reached a subscriber, in capture order.
     const messages = events
       .filter((event) => event.type === "message")
-      .map((event) =>
-        JSON.stringify((event as { message: unknown }).message),
-      );
+      .map((event) => JSON.stringify((event as { message: unknown }).message));
     assert.deepEqual(messages, partialLines.map(canonical));
     assert.lengthOf(
       events.filter((event) => event.type === "turn_completed"),
@@ -122,13 +124,12 @@ describe("claude direct session", () => {
         .map((event) => (event as { state: string }).state),
       ["starting", "idle", "busy", "idle"],
     );
-    assert.deepEqual(
-      spawner.lastHandle().written,
-      [`{"type":"user","message":{"role":"user","content":"Reply with one word."}}\n`],
-    );
+    assert.deepEqual(spawner.lastHandle().written, [
+      `{"type":"user","message":{"role":"user","content":"Reply with one word."}}\n`,
+    ]);
   });
 
-  it("reproduces the client side of the permission capture", async () => {
+  it("reproduces the client side of the permission capture", async function () {
     const initializeResponseLine = permissionStdout.find(
       (line) => parseLine(line).type === "control_response",
     )!;
@@ -204,7 +205,7 @@ describe("claude direct session", () => {
     );
   });
 
-  it("rejects a second turn while one is in flight", async () => {
+  it("rejects a second turn while one is in flight", async function () {
     const { session } = await startSession();
     const first = session.runTurn("one");
     await expectDirectError(session.runTurn("two"), "busy");
@@ -213,7 +214,7 @@ describe("claude direct session", () => {
     await session.close();
   });
 
-  it("rejects the turn in flight when the process exits", async () => {
+  it("rejects the turn in flight when the process exits", async function () {
     const { session, spawner } = await startSession();
     const exits: ClaudeDirectSessionEvent[] = [];
     session.subscribe((event) => {
@@ -228,7 +229,7 @@ describe("claude direct session", () => {
     await expectDirectError(session.runTurn("again"), "closed");
   });
 
-  it("fails start() when the init line never arrives", async () => {
+  it("fails start() when the init line never arrives", async function () {
     const spawner = createFakeClaudeSpawner();
     const session = createClaudeDirectSession(
       { ...baseConfig, startTimeoutMs: 20 },
@@ -239,7 +240,7 @@ describe("claude direct session", () => {
     assert.equal(spawner.lastHandle().terminateCalls, 1);
   });
 
-  it("reports a binary that cannot be found", async () => {
+  it("reports a binary that cannot be found", async function () {
     const spawner = createFakeClaudeSpawner({
       resolveError: new ClaudeDirectError(
         "binary_not_found",
@@ -251,7 +252,7 @@ describe("claude direct session", () => {
     assert.lengthOf(spawner.handles, 0);
   });
 
-  it("interrupts the turn in flight with a control request", async () => {
+  it("interrupts the turn in flight with a control request", async function () {
     const { session, spawner } = await startSession({ answerControls: true });
     const turn = session.runTurn("one");
     const interrupted = expectDirectError(turn, "interrupted");
@@ -265,7 +266,7 @@ describe("claude direct session", () => {
     assert.equal(session.state, "idle");
   });
 
-  it("interrupts the turn when its abort signal fires", async () => {
+  it("interrupts the turn when its abort signal fires", async function () {
     const { session, spawner } = await startSession({ answerControls: true });
     const controller = new AbortController();
     const turn = session.runTurn("one", { signal: controller.signal });
@@ -279,7 +280,7 @@ describe("claude direct session", () => {
     );
   });
 
-  it("changes model and permission mode through control requests", async () => {
+  it("changes model and permission mode through control requests", async function () {
     const { session, spawner } = await startSession({ answerControls: true });
     await session.setModel("opus");
     await session.setPermissionMode("acceptEdits");
@@ -296,7 +297,7 @@ describe("claude direct session", () => {
     ]);
   });
 
-  it("surfaces a control request the CLI rejects", async () => {
+  it("surfaces a control request the CLI rejects", async function () {
     const { session, spawner } = await startSession({
       onWrite: (line, handle) => {
         const parsed = parseLine(line);
@@ -320,12 +321,13 @@ describe("claude direct session", () => {
     assert.include(error.message, "unknown model");
   });
 
-  it("treats control_cancel_request as a cancelled permission", async () => {
+  it("treats control_cancel_request as a cancelled permission", async function () {
     const { session, spawner } = await startSession();
     const cancelled: string[] = [];
     const requests: ClaudeDirectPermissionRequest[] = [];
     session.subscribe((event) => {
-      if (event.type === "permission_cancelled") cancelled.push(event.requestId);
+      if (event.type === "permission_cancelled")
+        cancelled.push(event.requestId);
       if (event.type === "permission_request") requests.push(event.request);
     });
     const handle = spawner.lastHandle();
@@ -337,7 +339,10 @@ describe("claude direct session", () => {
       }),
     );
     handle.emitLine(
-      JSON.stringify({ type: "control_cancel_request", request_id: "cancel-me" }),
+      JSON.stringify({
+        type: "control_cancel_request",
+        request_id: "cancel-me",
+      }),
     );
     assert.deepEqual(cancelled, ["cancel-me"]);
     assert.lengthOf(requests, 1);
@@ -347,7 +352,7 @@ describe("claude direct session", () => {
     );
   });
 
-  it("denies a pending permission when the session closes", async () => {
+  it("denies a pending permission when the session closes", async function () {
     const { session, spawner } = await startSession();
     const handle = spawner.lastHandle();
     handle.emitLine(
@@ -377,7 +382,7 @@ describe("claude direct session", () => {
     assert.equal(session.state, "closed");
   });
 
-  it("redacts stderr before it becomes an event", async () => {
+  it("redacts stderr before it becomes an event", async function () {
     const { session, spawner } = await startSession();
     const texts: string[] = [];
     session.subscribe((event) => {
@@ -391,7 +396,7 @@ describe("claude direct session", () => {
     assert.include(texts[0], "sk-ant-[redacted]");
   });
 
-  it("leaves no orphan process behind", async () => {
+  it("leaves no orphan process behind", async function () {
     const spawner = createFakeClaudeSpawner({
       linesOnSpawn: partialTurn.handshake,
     });
@@ -423,7 +428,7 @@ describe("claude direct session", () => {
     assert.equal(spawner.handles[0].terminateCalls, 1);
   });
 
-  it("closes without throwing after the process already exited", async () => {
+  it("closes without throwing after the process already exited", async function () {
     const { session, spawner } = await startSession();
     spawner.lastHandle().exitNow({ code: 1, reason: "natural" });
     const exit = await session.close();

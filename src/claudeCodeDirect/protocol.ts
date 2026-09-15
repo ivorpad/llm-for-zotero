@@ -102,7 +102,8 @@ const REDACTIONS: ReadonlyArray<{ pattern: RegExp; replacement: string }> = [
   // An Authorization header or field takes its whole value with it, quoted or
   // bare, so nothing of `Authorization: Bearer <token>` survives.
   {
-    pattern: /(\bauthorization["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\r\n,;}]+)/gi,
+    pattern:
+      /(\bauthorization["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\r\n,;}]+)/gi,
     replacement: "$1[redacted]",
   },
   // Anthropic API keys, wherever they appear.
@@ -206,22 +207,23 @@ export function createStreamAssembler(): ClaudeStreamAssembler {
       index,
       kind: blockKindOf(blockType),
       blockType,
-      text: typeof (contentBlock as { text?: unknown })?.text === "string"
-        ? ((contentBlock as { text: string }).text)
-        : "",
+      text:
+        typeof (contentBlock as { text?: unknown })?.text === "string"
+          ? (contentBlock as { text: string }).text
+          : "",
       thinking:
         typeof (contentBlock as { thinking?: unknown })?.thinking === "string"
-          ? ((contentBlock as { thinking: string }).thinking)
+          ? (contentBlock as { thinking: string }).thinking
           : "",
       signature: "",
       partialJson: "",
       toolUseId:
         typeof (contentBlock as { id?: unknown })?.id === "string"
-          ? ((contentBlock as { id: string }).id)
+          ? (contentBlock as { id: string }).id
           : undefined,
       toolName:
         typeof (contentBlock as { name?: unknown })?.name === "string"
-          ? ((contentBlock as { name: string }).name)
+          ? (contentBlock as { name: string }).name
           : undefined,
       stopped: false,
     };

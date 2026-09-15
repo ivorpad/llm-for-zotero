@@ -58,9 +58,8 @@ type PendingControl = {
 };
 
 function randomRequestId(): string {
-  const cryptoObj = (
-    globalThis as { crypto?: { randomUUID?: () => string } }
-  ).crypto;
+  const cryptoObj = (globalThis as { crypto?: { randomUUID?: () => string } })
+    .crypto;
   try {
     const uuid = cryptoObj?.randomUUID?.();
     if (uuid) return uuid;
@@ -360,7 +359,9 @@ class ClaudeDirectSessionImpl implements ClaudeDirectSession {
     return this.handle;
   }
 
-  private write(message: Parameters<typeof serializeClaudeCliMessage>[0]): void {
+  private write(
+    message: Parameters<typeof serializeClaudeCliMessage>[0],
+  ): void {
     this.requireHandle().writeLine(serializeClaudeCliMessage(message));
   }
 
@@ -436,9 +437,7 @@ class ClaudeDirectSessionImpl implements ClaudeDirectSession {
         turn?.release();
         if (this.currentState === "busy") this.setState("idle");
         void this.sendInterrupt();
-        reject(
-          new ClaudeDirectError("interrupted", "The turn was aborted"),
-        );
+        reject(new ClaudeDirectError("interrupted", "The turn was aborted"));
       };
       if (signal) signal.addEventListener("abort", onAbort, { once: true });
       this.pendingTurn = {
