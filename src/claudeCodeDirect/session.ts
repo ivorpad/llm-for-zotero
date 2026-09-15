@@ -5,6 +5,12 @@
  * until close(), each turn is one `user` line, and the `result` line the CLI
  * writes at the end of a turn is what runTurn() resolves with. Tool approvals
  * arrive as `can_use_tool` control requests and are answered on stdin.
+ *
+ * The handshake is the `initialize` control request, which claude 2.1.272
+ * answers within about 350 ms of spawning. The CLI's `system` / `init` line is
+ * not part of it: with `--input-format stream-json` that line is written only
+ * once the first turn begins, so a session that waited for it would never
+ * finish starting.
  */
 import {
   ClaudeDirectError,
@@ -15,7 +21,6 @@ import {
   isClaudeCliInitMessage,
   isClaudeCliResultMessage,
   type ClaudeCliCanUseToolRequest,
-  type ClaudeCliInitMessage,
   type ClaudeCliInitializeResponse,
   type ClaudeCliOutboundControlRequest,
   type ClaudeCliPermissionResult,
@@ -75,6 +80,17 @@ function randomRequestId(): string {
   return `req-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
+function trimmedOrNull(value: string | undefined): string | null {
+  const trimmed = (value || "").trim();
+  return trimmed ? trimmed : null;
+}
+
+function toInitializeResponse(response: unknown): ClaudeCliInitializeResponse {
+  return response && typeof response === "object"
+    ? (response as ClaudeCliInitializeResponse)
+    : ({} as ClaudeCliInitializeResponse);
+}
+
 function toPermissionRequest(
   requestId: string,
   request: ClaudeCliCanUseToolRequest,
@@ -112,11 +128,6 @@ class ClaudeDirectSessionImpl implements ClaudeDirectSession {
   private handle: ClaudeCliProcessHandle | null = null;
   private sessionId: string | null = null;
   private pendingTurn: PendingTurn | null = null;
-  private awaitInit: {
-    resolve: (init: ClaudeCliInitMessage) => void;
-    reject: (error: ClaudeDirectError) => void;
-  } | null = null;
-  private initMessage: ClaudeCliInitMessage | null = null;
   private initializeResponse: ClaudeCliInitializeResponse | null = null;
   private lastExit: ClaudeCliProcessExit | null = null;
   /** Set while the `result` of an interrupted turn is still expected. */
@@ -205,10 +216,29 @@ class ClaudeDirectSessionImpl implements ClaudeDirectSession {
     );
     this.unsubscribes.push(handle.onExit((exit) => this.handleExit(exit)));
 
+    // The CLI works on the session id we passed on the command line; its own
+    // `init` and `result` lines confirm it once a turn runs.
+    this.sessionId =
+      trimmedOrNull(this.config.resumeSessionId) ??
+      trimmedOrNull(this.config.sessionId);
+
+    const timeoutMs = Math.max(
+      0,
+      this.config.startTimeoutMs ?? DEFAULT_START_TIMEOUT_MS,
+    );
     try {
-      const init = await this.waitForInit();
+      const response = await this.sendControlRequest(
+        { subtype: "initialize" },
+        {
+          ms: timeoutMs,
+          code: "start_timeout",
+          message: `The claude CLI did not answer the initialize request within ${timeoutMs} ms`,
+        },
+      );
+      const initialize = toInitializeResponse(response);
+      this.initializeResponse = initialize;
       this.setState("idle");
-      return { init, binary, pid: handle.pid };
+      return { initialize, binary, pid: handle.pid };
     } catch (error) {
       const wrapped = this.asDirectError(error, "start_timeout");
       this.setState("failed");
@@ -216,38 +246,6 @@ class ClaudeDirectSessionImpl implements ClaudeDirectSession {
       await handle.terminate().catch(() => undefined);
       throw wrapped;
     }
-  }
-
-  private waitForInit(): Promise<ClaudeCliInitMessage> {
-    if (this.initMessage) return Promise.resolve(this.initMessage);
-    const timeoutMs = Math.max(
-      0,
-      this.config.startTimeoutMs ?? DEFAULT_START_TIMEOUT_MS,
-    );
-    return new Promise<ClaudeCliInitMessage>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.awaitInit = null;
-        reject(
-          new ClaudeDirectError(
-            "start_timeout",
-            `The claude CLI did not send its init line within ${timeoutMs} ms`,
-            { timeoutMs },
-          ),
-        );
-      }, timeoutMs);
-      this.awaitInit = {
-        resolve: (init) => {
-          clearTimeout(timer);
-          this.awaitInit = null;
-          resolve(init);
-        },
-        reject: (error) => {
-          clearTimeout(timer);
-          this.awaitInit = null;
-          reject(error);
-        },
-      };
-    });
   }
 
   private asDirectError(
@@ -265,9 +263,8 @@ class ClaudeDirectSessionImpl implements ClaudeDirectSession {
     this.emit({ type: "message", message });
 
     if (isClaudeCliInitMessage(message)) {
-      this.initMessage = message;
+      // Arrives with the first turn, long after start() resolved.
       this.sessionId = message.session_id;
-      this.awaitInit?.resolve(message);
       return;
     }
     if (isClaudeCliResultMessage(message)) {
@@ -331,7 +328,6 @@ class ClaudeDirectSessionImpl implements ClaudeDirectSession {
       })`,
       { reason: exit.reason, code: exit.code },
     );
-    this.awaitInit?.reject(error);
     this.rejectPendingWork(error);
     if (this.currentState !== "closing" && this.currentState !== "closed") {
       this.setState("failed");
@@ -383,10 +379,33 @@ class ClaudeDirectSessionImpl implements ClaudeDirectSession {
 
   private sendControlRequest(
     request: ClaudeCliOutboundControlRequest["request"],
+    deadline?: { ms: number; code: ClaudeDirectErrorCode; message: string },
   ): Promise<unknown> {
     const requestId = (this.deps.generateRequestId ?? randomRequestId)();
     const promise = new Promise<unknown>((resolve, reject) => {
-      this.pendingControls.set(requestId, { resolve, reject });
+      if (!deadline) {
+        this.pendingControls.set(requestId, { resolve, reject });
+        return;
+      }
+      const timer = setTimeout(() => {
+        this.pendingControls.delete(requestId);
+        reject(
+          new ClaudeDirectError(deadline.code, deadline.message, {
+            requestId,
+            timeoutMs: deadline.ms,
+          }),
+        );
+      }, deadline.ms);
+      this.pendingControls.set(requestId, {
+        resolve: (value) => {
+          clearTimeout(timer);
+          resolve(value);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
     });
     try {
       this.write({ type: "control_request", request_id: requestId, request });
@@ -397,16 +416,18 @@ class ClaudeDirectSessionImpl implements ClaudeDirectSession {
     return promise;
   }
 
-  async initialize(): Promise<ClaudeCliInitializeResponse> {
-    if (this.initializeResponse) return this.initializeResponse;
-    const response = await this.sendControlRequest({ subtype: "initialize" });
-    const payload =
-      response && typeof response === "object"
-        ? (response as ClaudeCliInitializeResponse)
-        : ({} as ClaudeCliInitializeResponse);
+  async initialize(options?: {
+    force?: boolean;
+  }): Promise<ClaudeCliInitializeResponse> {
+    if (!options?.force && this.initializeResponse) {
+      return this.initializeResponse;
+    }
+    const response = toInitializeResponse(
+      await this.sendControlRequest({ subtype: "initialize" }),
+    );
     // The payload carries the signed-in account; it is cached, never logged.
-    this.initializeResponse = payload;
-    return payload;
+    this.initializeResponse = response;
+    return response;
   }
 
   runTurn(

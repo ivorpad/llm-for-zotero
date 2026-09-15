@@ -29,6 +29,10 @@ const permissionStdout = readClaudeDirectFixtureLines(
 const permissionStdin = readClaudeDirectFixtureLines(
   "permission-write-haiku.stdin.jsonl",
 );
+/** The CLI's captured answer to an `initialize` control request. */
+const initializeResponseLine = permissionStdout.find(
+  (line) => JSON.parse(line).type === "control_response",
+)!;
 
 const baseConfig: ClaudeDirectSessionConfig = {
   cwd: "/tmp/claude-direct-fixture",
@@ -59,6 +63,25 @@ function canonical(line: string): string {
   return JSON.stringify(parseLine(line));
 }
 
+/**
+ * Answers an `initialize` control request with the captured response,
+ * re-addressed to the request id the session generated. This is the whole
+ * handshake: the CLI's `init` line does not arrive until the first turn.
+ */
+function answerInitialize(line: string, handle: FakeClaudeHandle): boolean {
+  const parsed = parseLine(line);
+  if (
+    parsed.type !== "control_request" ||
+    parsed.request?.subtype !== "initialize"
+  ) {
+    return false;
+  }
+  const reply = parseLine(initializeResponseLine);
+  reply.response.request_id = parsed.request_id;
+  replyLater(handle, [JSON.stringify(reply)]);
+  return true;
+}
+
 /** Emits after the caller's write has returned, the way a real process would. */
 function replyLater(handle: FakeClaudeHandle, lines: readonly string[]): void {
   setTimeout(() => handle.emitLines(lines), 0);
@@ -87,13 +110,15 @@ async function expectDirectError(
 }
 
 describe("claude direct session", function () {
-  it("starts on the init line and completes a turn on the result line", async function () {
+  it("starts on the initialize response and completes a turn on the result line", async function () {
     const spawner = createFakeClaudeSpawner({
       binary: { path: "/opt/homebrew/bin/claude", source: "shell_lookup" },
-      linesOnSpawn: partialTurn.handshake,
       onWrite: (line, handle) => {
-        if (parseLine(line).type === "user")
-          replyLater(handle, partialTurn.turn);
+        if (answerInitialize(line, handle)) return;
+        // The hook and init lines come with the turn, not with the spawn.
+        if (parseLine(line).type === "user") {
+          replyLater(handle, [...partialTurn.handshake, ...partialTurn.turn]);
+        }
       },
     });
     const { events, subscribe } = collectEvents();
@@ -101,15 +126,13 @@ describe("claude direct session", function () {
     session.subscribe(subscribe);
 
     const started = await session.start();
-    assert.equal(
-      started.init.session_id,
-      "2b729401-243a-427a-9749-74ee716d3591",
-    );
-    assert.equal(started.init.cwd, "/tmp/claude-direct-fixture");
+    assert.equal(started.initialize.models?.[0].value, "default");
+    assert.isTrue((started.initialize.commands?.length ?? 0) > 0);
     assert.equal(started.binary.source, "shell_lookup");
     assert.isNumber(started.pid);
     assert.equal(session.state, "idle");
-    assert.equal(session.cliSessionId, started.init.session_id);
+    // Until the CLI reports one, the id is the one we asked it to use.
+    assert.equal(session.cliSessionId, baseConfig.sessionId);
     assert.deepEqual(spawner.spawnRequests[0].cwd, baseConfig.cwd);
     assert.include(spawner.spawnRequests[0].args, "--include-partial-messages");
 
@@ -119,11 +142,16 @@ describe("claude direct session", function () {
     assert.equal(result.result, "Ready.");
     assert.isFalse(result.is_error);
     assert.equal(session.state, "idle");
+    // The init line of the turn replaced the configured id.
+    assert.equal(session.cliSessionId, "2b729401-243a-427a-9749-74ee716d3591");
 
-    // Every line of the capture reached a subscriber, in capture order.
+    // Every line of the capture reached a subscriber, in capture order. The
+    // handshake response is a line too, so it is taken out first.
     const messages = events
       .filter((event) => event.type === "message")
-      .map((event) => JSON.stringify((event as { message: unknown }).message));
+      .map((event) => (event as { message: Record<string, any> }).message)
+      .filter((message) => message.type !== "control_response")
+      .map((message) => JSON.stringify(message));
     assert.deepEqual(messages, partialLines.map(canonical));
     assert.lengthOf(
       events.filter((event) => event.type === "turn_completed"),
@@ -135,15 +163,17 @@ describe("claude direct session", function () {
         .map((event) => (event as { state: string }).state),
       ["starting", "idle", "busy", "idle"],
     );
-    assert.deepEqual(spawner.lastHandle().written, [
-      `{"type":"user","message":{"role":"user","content":"Reply with one word."}}\n`,
-    ]);
+    const written = spawner.lastHandle().written.map(parseLine);
+    assert.lengthOf(written, 2);
+    assert.deepEqual(written[0].request, { subtype: "initialize" });
+    assert.isString(written[0].request_id);
+    assert.deepEqual(written[1], {
+      type: "user",
+      message: { role: "user", content: "Reply with one word." },
+    });
   });
 
   it("reproduces the client side of the permission capture", async function () {
-    const initializeResponseLine = permissionStdout.find(
-      (line) => parseLine(line).type === "control_response",
-    )!;
     const { handshake, turn } = partitionFixtureAtInit(permissionStdout);
     const handshakeLines = handshake.filter(
       (line) => line !== initializeResponseLine,
@@ -156,16 +186,18 @@ describe("claude direct session", function () {
     const userPrompt = parseLine(permissionStdin[1]).message.content as string;
 
     const spawner = createFakeClaudeSpawner({
-      linesOnSpawn: handshakeLines,
       onWrite: (line, handle) => {
         const parsed = parseLine(line);
         if (parsed.type === "control_request") {
           if (parsed.request.subtype === "initialize") {
+            // The capture's response already carries this request id.
             replyLater(handle, [initializeResponseLine]);
           }
           return;
         }
-        if (parsed.type === "user") replyLater(handle, beforePermission);
+        if (parsed.type === "user") {
+          replyLater(handle, [...handshakeLines, ...beforePermission]);
+        }
         if (parsed.type === "control_response") {
           replyLater(handle, afterPermission);
         }
@@ -181,13 +213,12 @@ describe("claude direct session", function () {
       if (event.type === "permission_request") requests.push(event.request);
     });
 
-    await session.start();
+    const started = await session.start();
     const initialize = await session.initialize();
+    assert.strictEqual(initialize, started.initialize);
     assert.equal(initialize.models?.[0].value, "default");
     assert.equal(initialize.models?.[0].resolvedModel, "claude-opus-5[1m]");
     assert.isTrue((initialize.commands?.length ?? 0) > 0);
-    // Cached: a second call must not write a second control request.
-    assert.strictEqual(await session.initialize(), initialize);
 
     const turnPromise = session.runTurn(userPrompt);
     await waitFor(() => requests.length === 1);
@@ -282,7 +313,7 @@ describe("claude direct session", function () {
     await expectDirectError(session.runTurn("again"), "closed");
   });
 
-  it("fails start() when the init line never arrives", async function () {
+  it("fails start() when the initialize response never arrives", async function () {
     const spawner = createFakeClaudeSpawner();
     const session = createClaudeDirectSession(
       { ...baseConfig, startTimeoutMs: 20 },
@@ -290,7 +321,22 @@ describe("claude direct session", function () {
     );
     await expectDirectError(session.start(), "start_timeout");
     assert.equal(session.state, "failed");
+    const written = spawner.lastHandle().written.map(parseLine);
+    assert.lengthOf(written, 1);
+    assert.deepEqual(written[0].request, { subtype: "initialize" });
     assert.equal(spawner.lastHandle().terminateCalls, 1);
+  });
+
+  it("re-asks the CLI only when initialize is forced", async function () {
+    const { session, spawner } = await startSession();
+    const handle = spawner.lastHandle();
+    const cached = await session.initialize();
+    assert.lengthOf(handle.written, 1);
+    const refreshed = await session.initialize({ force: true });
+    assert.lengthOf(handle.written, 2);
+    assert.notStrictEqual(refreshed, cached);
+    assert.equal(refreshed.models?.[0].value, cached.models?.[0].value);
+    await session.close();
   });
 
   it("reports a binary that cannot be found", async function () {
@@ -313,8 +359,10 @@ describe("claude direct session", function () {
     await interrupted;
     const written = spawner.lastHandle().written.map(parseLine);
     assert.deepEqual(
-      written.filter((line) => line.type === "control_request")[0].request,
-      { subtype: "interrupt" },
+      written
+        .filter((line) => line.type === "control_request")
+        .map((line) => line.request),
+      [{ subtype: "initialize" }, { subtype: "interrupt" }],
     );
     // The CLI still has the interrupted turn to finish.
     assert.equal(session.state, "busy");
@@ -388,6 +436,8 @@ describe("claude direct session", function () {
       .filter((line) => line.type === "control_request")
       .map((line) => line.request);
     assert.deepEqual(requests, [
+      // start() sent the handshake before any of these.
+      { subtype: "initialize" },
       { subtype: "set_model", model: "opus" },
       { subtype: "set_permission_mode", mode: "acceptEdits" },
       { subtype: "set_model" },
@@ -497,7 +547,9 @@ describe("claude direct session", function () {
 
   it("leaves no orphan process behind", async function () {
     const spawner = createFakeClaudeSpawner({
-      linesOnSpawn: partialTurn.handshake,
+      onWrite: (line, handle) => {
+        answerInitialize(line, handle);
+      },
     });
     const sessions = [];
     for (let index = 0; index < 3; index += 1) {
@@ -543,8 +595,8 @@ async function startSession(options?: {
 }) {
   let nextId = 0;
   const spawner = createFakeClaudeSpawner({
-    linesOnSpawn: partialTurn.handshake,
     onWrite: (line, handle) => {
+      if (answerInitialize(line, handle)) return;
       options?.onWrite?.(line, handle);
       if (!options?.answerControls) return;
       const parsed = parseLine(line);
