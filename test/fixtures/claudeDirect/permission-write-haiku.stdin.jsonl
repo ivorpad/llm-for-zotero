@@ -1,0 +1,3 @@
+{"type":"control_request","request_id":"init-1","request":{"subtype":"initialize"}}
+{"type":"user","message":{"role":"user","content":"Use the Write tool to create a file named permission-fixture.txt in the current directory containing the single word ok. Then reply with one word."}}
+{"type":"control_response","response":{"subtype":"success","request_id":"4198f70b-4fd8-49c4-ac85-0358fb4c8e7f","response":{"behavior":"allow","updatedInput":{"file_path":"/tmp/claude-direct-fixture/permission-fixture.txt","content":"ok"}}}}

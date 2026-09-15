@@ -1619,6 +1619,48 @@
                       </html:div>
                     </html:div>
                     <html:div class="llm-pref-field">
+                      <html:label for="__addonRef__-claude-code-runtime">
+                        Runtime
+                      </html:label>
+                      <html:div class="llm-pref-control">
+                        <html:select
+                          id="__addonRef__-claude-code-runtime"
+                          class="llm-pref-select"
+                        >
+                          <html:option value="bridge">
+                            Bridge (default)
+                          </html:option>
+                          <html:option value="direct">Direct CLI</html:option>
+                        </html:select>
+                        <html:span class="llm-pref-hint">
+                          How Zotero talks to Claude Code.
+                          <html:code>Bridge (default)</html:code> sends requests
+                          to the local bridge service.
+                          <html:code>Direct CLI</html:code> runs the
+                          <html:code>claude</html:code> command itself, so no
+                          bridge has to be running; Zotero actions are not
+                          available yet in that mode.
+                        </html:span>
+                      </html:div>
+                    </html:div>
+                    <html:div class="llm-pref-field">
+                      <html:label for="__addonRef__-claude-code-cli-path">
+                        Claude CLI path
+                      </html:label>
+                      <html:div class="llm-pref-control">
+                        <html:input
+                          id="__addonRef__-claude-code-cli-path"
+                          class="llm-pref-input"
+                          type="text"
+                          placeholder="Optional absolute path to claude executable"
+                        ></html:input>
+                        <html:span class="llm-pref-hint">
+                          Used by Direct CLI mode. Leave blank to search your
+                          PATH.
+                        </html:span>
+                      </html:div>
+                    </html:div>
+                    <html:div class="llm-pref-field">
                       <html:label>Trace log</html:label>
                       <html:div class="llm-pref-control">
                         <html:div class="llm-pref-line">

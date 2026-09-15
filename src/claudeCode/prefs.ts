@@ -184,6 +184,25 @@ export function getClaudeConfigSourcePref():
   return "default";
 }
 
+export type ClaudeCodeRuntimeKind = "bridge" | "direct";
+
+export function getClaudeCodeRuntimePref(): ClaudeCodeRuntimeKind {
+  const raw = getStringPref("claudeCodeRuntime").trim().toLowerCase();
+  return raw === "direct" ? "direct" : "bridge";
+}
+
+export function setClaudeCodeRuntimePref(runtime: ClaudeCodeRuntimeKind): void {
+  setPref("claudeCodeRuntime", runtime === "direct" ? "direct" : "bridge");
+}
+
+export function getClaudeCliPathPref(): string {
+  return getStringPref("claudeCodeCliPath").trim();
+}
+
+export function setClaudeCliPathPref(path: string): void {
+  setPref("claudeCodeCliPath", path.trim());
+}
+
 export function getClaudeSettingSourcesByPref(): Array<
   "user" | "project" | "local"
 > {
