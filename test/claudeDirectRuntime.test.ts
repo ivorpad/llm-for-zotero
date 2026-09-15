@@ -30,6 +30,8 @@ type FakeSessionScript = {
   result?: ClaudeCliResultMessage;
   initializeResponse?: ClaudeCliInitializeResponse;
   initializeError?: string;
+  /** Called from start(), so a test can order the spawn against other work. */
+  onStart?: () => void;
 };
 
 const RESULT_LINE: ClaudeCliResultMessage = {
@@ -75,6 +77,7 @@ class FakeSession implements ClaudeDirectSession {
 
   async start(): Promise<ClaudeDirectStartResult> {
     this.startCount += 1;
+    this.script.onStart?.();
     // start() is the initialize handshake, so a handshake that fails fails
     // the start, exactly as a missing binary or a stale login does.
     if (this.script.initializeError) {
@@ -250,9 +253,11 @@ function createEnabledMcpDeps(overrides: Partial<ClaudeDirectMcpDeps> = {}): {
   deps: Partial<ClaudeDirectMcpDeps>;
   getClearCount: () => number;
   registrations: Array<{ token: string; scope: unknown }>;
+  order: string[];
 } {
   let clearCount = 0;
   const registrations: Array<{ token: string; scope: unknown }> = [];
+  const order: string[] = [];
   const deps: Partial<ClaudeDirectMcpDeps> = {
     isEnabled: () => true,
     getProfileSignature: () => "profile-test",
@@ -264,6 +269,7 @@ function createEnabledMcpDeps(overrides: Partial<ClaudeDirectMcpDeps> = {}): {
     registerScope: (scope, registerOptions) => {
       const token = registerOptions.token || "generated-token";
       registrations.push({ token, scope });
+      order.push("registerScope");
       return {
         token,
         clear: () => {
@@ -277,7 +283,12 @@ function createEnabledMcpDeps(overrides: Partial<ClaudeDirectMcpDeps> = {}): {
     safeReadToolNames: ["paper_read", "library_search"],
     ...overrides,
   };
-  return { deps, getClearCount: () => clearCount, registrations };
+  return {
+    deps,
+    getClearCount: () => clearCount,
+    registrations,
+    order,
+  };
 }
 
 async function flush(): Promise<void> {
@@ -861,6 +872,21 @@ describe("Claude Code direct CLI runtime", function () {
         ),
       ["write-1", "tool-1"],
     );
+  });
+
+  it("registers the MCP scope before the CLI process starts", async function () {
+    // The CLI asks the MCP server for tools/list once, during its own startup,
+    // and caches the result. The server only exposes tools that a registered
+    // scope makes visible, so a scope registered after the spawn leaves the
+    // whole session with no Zotero tools.
+    const mcp = createEnabledMcpDeps();
+    const { runtime, sessions } = createRuntime(
+      { onStart: () => mcp.order.push("sessionStart") },
+      { mcp: mcp.deps },
+    );
+    await runtime.runTurn({ request: buildRequest() });
+    assert.equal(sessions.length, 1);
+    assert.deepEqual(mcp.order, ["registerScope", "sessionStart"]);
   });
 
   it("clears the per-turn MCP scope when the turn ends and when the session closes", async function () {
