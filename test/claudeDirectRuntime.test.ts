@@ -53,6 +53,7 @@ class FakeSession implements ClaudeDirectSession {
   startCount = 0;
   closeCount = 0;
   initializeCount = 0;
+  initializeForceCount = 0;
   turns: Array<string | ClaudeContentBlock[]> = [];
   permissionDecisions: Array<{
     requestId: string;
@@ -73,25 +74,27 @@ class FakeSession implements ClaudeDirectSession {
 
   async start(): Promise<ClaudeDirectStartResult> {
     this.startCount += 1;
+    // start() is the initialize handshake, so a handshake that fails fails
+    // the start, exactly as a missing binary or a stale login does.
+    if (this.script.initializeError) {
+      this.state = "failed";
+      throw new Error(this.script.initializeError);
+    }
     this.state = "idle";
-    this.cliSessionId = "cli-session-1";
+    this.cliSessionId =
+      this.config.resumeSessionId || this.config.sessionId || "cli-session-1";
     return {
-      init: {
-        type: "system",
-        subtype: "init",
-        cwd: this.config.cwd,
-        session_id: "cli-session-1",
-        model: this.config.model || "sonnet",
-        permissionMode: this.config.permissionMode,
-        tools: ["Read", "Write"],
-      },
+      initialize: this.script.initializeResponse || {},
       binary: { path: "/usr/local/bin/claude", source: "explicit" },
       pid: 4242,
     };
   }
 
-  async initialize(): Promise<ClaudeCliInitializeResponse> {
+  async initialize(options?: {
+    force?: boolean;
+  }): Promise<ClaudeCliInitializeResponse> {
     this.initializeCount += 1;
+    this.initializeForceCount += options?.force ? 1 : 0;
     if (this.script.initializeError) {
       throw new Error(this.script.initializeError);
     }
@@ -551,7 +554,7 @@ describe("Claude Code direct CLI runtime", function () {
   });
 
   it("builds the model catalog from the CLI's initialize response", async function () {
-    const { runtime } = createRuntime({
+    const { runtime, sessions } = createRuntime({
       initializeResponse: {
         models: [
           {
@@ -577,15 +580,28 @@ describe("Claude Code direct CLI runtime", function () {
       },
     });
 
-    const catalog = await runtime.listModels(true);
+    const probed = await runtime.listModels(true);
 
-    assert.isFalse(catalog.legacy);
+    assert.isFalse(probed.legacy);
     assert.deepEqual(
-      catalog.models.map((model) => model.value),
+      probed.models.map((model) => model.value),
       ["opus", "haiku"],
     );
     assert.deepEqual(await runtime.listEfforts("opus"), ["low", "high", "max"]);
     assert.deepEqual(await runtime.listEfforts("haiku"), []);
+
+    // A live conversation answers from the handshake start() already paid
+    // for; only a forced refresh sends a second initialize.
+    await runtime.runTurn({ request: buildRequest() });
+    const live = sessions[sessions.length - 1];
+    const cached = await runtime.listModels(true);
+    assert.deepEqual(
+      cached.models.map((model) => model.value),
+      ["opus", "haiku"],
+    );
+    assert.equal(live.initializeCount, 1);
+    assert.equal(live.initializeForceCount, 1);
+    assert.equal(live.startCount, 1);
   });
 
   it("falls back to the four aliases when initialize fails", async function () {

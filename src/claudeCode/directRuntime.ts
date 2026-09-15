@@ -92,7 +92,8 @@ type PooledSession = {
   config: ClaudeDirectSessionConfig;
   mounts: Set<string>;
   closeTimer: ReturnType<typeof setTimeout> | null;
-  initializePromise: Promise<ClaudeCliInitializeResponse> | null;
+  /** The `initialize` response start() handshaked for; no second round trip. */
+  handshake: ClaudeCliInitializeResponse | null;
 };
 
 function defaultDataDir(): string | null {
@@ -300,11 +301,11 @@ export function createClaudeDirectRuntime(
       config,
       mounts: mountsFor(conversationKey),
       closeTimer: null,
-      initializePromise: null,
+      handshake: null,
     };
     pool.set(conversationKey, entry);
     try {
-      await session.start();
+      entry.handshake = (await session.start()).initialize;
     } catch (error) {
       pool.delete(conversationKey);
       throw error;
@@ -346,14 +347,14 @@ export function createClaudeDirectRuntime(
 
   const initializeSession = async (
     entry: PooledSession,
+    force = false,
   ): Promise<ClaudeCliInitializeResponse> => {
-    if (!entry.initializePromise) {
-      entry.initializePromise = entry.session.initialize().catch((error) => {
-        entry.initializePromise = null;
-        throw error;
-      });
-    }
-    return entry.initializePromise;
+    if (!force && entry.handshake) return entry.handshake;
+    const response = await entry.session.initialize(
+      force ? { force: true } : undefined,
+    );
+    entry.handshake = response;
+    return response;
   };
 
   const anyPooledSession = (
@@ -382,18 +383,19 @@ export function createClaudeDirectRuntime(
       { spawner: getSpawner(), now },
     );
     try {
-      await session.start();
-      return await session.initialize();
+      // start() is the handshake, so its result is the whole answer.
+      return (await session.start()).initialize;
     } finally {
       void session.close().catch(() => undefined);
     }
   };
 
   const loadInitializeResponse = async (
+    force: boolean,
     context?: ClaudeModelCatalogRequestContext,
   ): Promise<ClaudeCliInitializeResponse> => {
     const entry = anyPooledSession(context);
-    return entry ? initializeSession(entry) : probeInitialize();
+    return entry ? initializeSession(entry, force) : probeInitialize();
   };
 
   const listModels = async (
@@ -404,7 +406,7 @@ export function createClaudeDirectRuntime(
       return catalogCache.catalog;
     }
     try {
-      const response = await loadInitializeResponse(context);
+      const response = await loadInitializeResponse(force, context);
       const catalog = normalizeClaudeModelCatalog({
         modelInfos: response.models || [],
       });
@@ -434,11 +436,11 @@ export function createClaudeDirectRuntime(
     return entry?.supportedEffortLevels ? [...entry.supportedEffortLevels] : [];
   };
 
-  const refreshSlashCommands = async (): Promise<void> => {
+  const refreshSlashCommands = async (force = false): Promise<void> => {
     const entry = anyPooledSession();
     if (!entry) return;
     try {
-      const response = await initializeSession(entry);
+      const response = await initializeSession(entry, force);
       slashCommands = (response.commands || []).map((command) => ({
         name: command.name,
         description:
@@ -566,7 +568,7 @@ export function createClaudeDirectRuntime(
     refreshExternalActions: async () => undefined,
     listSlashCommandsSync: () =>
       slashCommands.map((command) => ({ ...command })),
-    refreshSlashCommands: async () => refreshSlashCommands(),
+    refreshSlashCommands: async (force) => refreshSlashCommands(force),
     listEfforts,
     listModels,
     updateRuntimeRetention: async ({ conversationKey, mountId, retain }) => {
