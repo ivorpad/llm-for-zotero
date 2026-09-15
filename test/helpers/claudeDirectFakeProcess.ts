@@ -84,7 +84,9 @@ class FakeHandle implements FakeClaudeHandle {
     private readonly onWrite:
       | ((line: string, handle: FakeClaudeHandle) => void)
       | undefined,
-    private readonly onExit: (handle: FakeHandle) => void,
+    // Named apart from the onExit() subscriber: a parameter property with that
+    // name would shadow the method on the prototype.
+    private readonly onSettled: (handle: FakeHandle) => void,
   ) {}
 
   get exited(): boolean {
@@ -153,7 +155,7 @@ class FakeHandle implements FakeClaudeHandle {
   private settle(exit: ClaudeCliProcessExit): ClaudeCliProcessExit {
     if (this.exitRecord) return this.exitRecord;
     this.exitRecord = exit;
-    this.onExit(this);
+    this.onSettled(this);
     for (const handler of [...this.exitHandlers]) handler(exit);
     return exit;
   }
