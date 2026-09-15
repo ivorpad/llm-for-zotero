@@ -99,22 +99,23 @@ export const serializeClaudeCliMessage: ClaudeCliMessageSerializer = (
 ) => `${JSON.stringify(message)}\n`;
 
 const REDACTIONS: ReadonlyArray<{ pattern: RegExp; replacement: string }> = [
+  // An Authorization header or field takes its whole value with it, quoted or
+  // bare, so nothing of `Authorization: Bearer <token>` survives.
+  {
+    pattern: /(\bauthorization["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\r\n,;}]+)/gi,
+    replacement: "$1[redacted]",
+  },
   // Anthropic API keys, wherever they appear.
   { pattern: /sk-ant-[A-Za-z0-9_-]+/g, replacement: "sk-ant-[redacted]" },
-  // `Bearer <token>` in a header or a log line.
+  // `Bearer <token>` anywhere else.
   {
     pattern: /\bBearer\s+[A-Za-z0-9._~+/=-]+/gi,
     replacement: "Bearer [redacted]",
   },
-  // An Authorization header or field, quoted or bare.
+  // Long opaque values behind a token or key parameter.
   {
     pattern:
-      /(\bauthorization["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;}"']+)/gi,
-    replacement: "$1[redacted]",
-  },
-  // Long opaque values behind a token/key parameter.
-  {
-    pattern: /\b((?:api[_-]?key|access[_-]?token|token|key)=)[A-Za-z0-9_-]{40,}/gi,
+      /\b((?:api[_-]?key|access[_-]?token|token|key)=)[A-Za-z0-9_-]{40,}/gi,
     replacement: "$1[redacted]",
   },
 ];

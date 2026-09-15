@@ -554,7 +554,6 @@ class ClaudeDirectSessionImpl implements ClaudeDirectSession {
               response: {
                 behavior: "deny",
                 message: "The Zotero session was closed",
-                ...(request.toolUseId ? { toolUseID: request.toolUseId } : {}),
               },
             },
           }),
@@ -574,18 +573,18 @@ function buildPermissionResult(
   request: ClaudeDirectPermissionRequest,
   decision: ClaudeDirectPermissionDecision,
 ): ClaudeCliPermissionResult {
+  // The captured CLI exchange answers with `behavior` and `updatedInput`
+  // only, so `toolUseID` stays out of the response.
   if (decision.behavior === "allow") {
     return {
       behavior: "allow",
       updatedInput: decision.updatedInput ?? request.input,
-      ...(request.toolUseId ? { toolUseID: request.toolUseId } : {}),
     };
   }
   return {
     behavior: "deny",
     message: decision.message ?? "The request was denied in Zotero",
     ...(decision.interrupt ? { interrupt: true } : {}),
-    ...(request.toolUseId ? { toolUseID: request.toolUseId } : {}),
   };
 }
 
