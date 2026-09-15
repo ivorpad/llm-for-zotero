@@ -209,11 +209,53 @@ describe("claude direct session", function () {
     const result = await turnPromise;
     assert.equal(result.result, "Done.");
 
-    // The three lines the session wrote are the three lines of the capture.
+    // The three lines the session wrote are the three lines of the capture,
+    // apart from the tool use id the SDK echoes back in its answer, which the
+    // capture did not carry.
+    const written = spawner.lastHandle().written.map(parseLine);
+    assert.equal(written[2].response.response.toolUseID, request.toolUseId);
+    delete written[2].response.response.toolUseID;
+    assert.deepEqual(written, permissionStdin.map(parseLine));
     assert.deepEqual(
-      spawner.lastHandle().written,
-      permissionStdin.map((line) => `${line}\n`),
+      spawner.lastHandle().written.slice(0, 2),
+      permissionStdin.slice(0, 2).map((line) => `${line}\n`),
     );
+  });
+
+  it("echoes the tool use id back when a permission is denied", async function () {
+    const { session, spawner } = await startSession();
+    const handle = spawner.lastHandle();
+    handle.emitLine(
+      JSON.stringify({
+        type: "control_request",
+        request_id: "deny-1",
+        request: {
+          subtype: "can_use_tool",
+          tool_name: "Bash",
+          input: { command: "rm -rf /" },
+          tool_use_id: "toolu_deny",
+        },
+      }),
+    );
+    await session.respondToPermission("deny-1", {
+      behavior: "deny",
+      message: "Not in a library",
+      interrupt: true,
+    });
+    assert.deepEqual(parseLine(handle.written[handle.written.length - 1]), {
+      type: "control_response",
+      response: {
+        subtype: "success",
+        request_id: "deny-1",
+        response: {
+          behavior: "deny",
+          message: "Not in a library",
+          interrupt: true,
+          toolUseID: "toolu_deny",
+        },
+      },
+    });
+    await session.close();
   });
 
   it("rejects a second turn while one is in flight", async function () {
@@ -418,6 +460,7 @@ describe("claude direct session", function () {
           subtype: "can_use_tool",
           tool_name: "Bash",
           input: { command: "rm -rf /" },
+          tool_use_id: "toolu_pending",
         },
       }),
     );
@@ -431,6 +474,7 @@ describe("claude direct session", function () {
         response: {
           behavior: "deny",
           message: "The Zotero session was closed",
+          toolUseID: "toolu_pending",
         },
       },
     });
