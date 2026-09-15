@@ -569,6 +569,13 @@ export type ClaudeDirectSessionState =
   | "closed"
   | "failed";
 
+/**
+ * Delivery rules: the session emits one `message` event for every parsed
+ * stdout line, in wire order, including the closing `result` line, and only
+ * then emits the derived event for it (`turn_completed`, `permission_request`,
+ * ...). Listeners are invoked synchronously from the line reader, so a listener
+ * that awaits must queue its own work to keep order.
+ */
 export type ClaudeDirectSessionEvent =
   | { type: "state"; state: ClaudeDirectSessionState }
   | { type: "message"; message: ClaudeCliInboundMessage }
@@ -611,6 +618,7 @@ export interface ClaudeDirectSession {
   interrupt(): Promise<void>;
   setPermissionMode(mode: ClaudeDirectPermissionMode): Promise<void>;
   setModel(model: string | undefined): Promise<void>;
+  /** Synchronous, wire-ordered delivery; see ClaudeDirectSessionEvent. */
   subscribe(listener: (event: ClaudeDirectSessionEvent) => void): () => void;
   /** Terminate the process with the SDK schedule and drop listeners. Idempotent. */
   close(
