@@ -17,24 +17,17 @@ import {
 } from "../agent/externalBackendBridge";
 import { resolveAgentRuntimeRequest } from "../agent/context/resolvedAgentRequest";
 import { buildAgentModelCapabilities } from "../agent/model/contentCapabilities";
-import {
-  isClaudeCliAssistantMessage,
-  isClaudeCliResultMessage,
-  isClaudeCliStreamEventMessage,
-  isClaudeCliUserMessage,
-  isClaudeToolResultBlock,
-  isClaudeToolUseBlock,
-  type ClaudeCliInboundMessage,
-  type ClaudeCliInitializeResponse,
-  type ClaudeCliProcessSpawner,
-  type ClaudeDirectEffort,
-  type ClaudeDirectPermissionMode,
-  type ClaudeDirectSession,
-  type ClaudeDirectSessionConfig,
-  type ClaudeDirectSessionEvent,
-  type ClaudeDirectSessionFactory,
-  type ClaudeDirectSettingSource,
+import type {
+  ClaudeCliInitializeResponse,
+  ClaudeCliProcessSpawner,
+  ClaudeDirectEffort,
+  ClaudeDirectPermissionMode,
+  ClaudeDirectSession,
+  ClaudeDirectSessionConfig,
+  ClaudeDirectSessionFactory,
+  ClaudeDirectSettingSource,
 } from "../claudeCodeDirect/contract";
+import { createClaudeDirectEventPipeline } from "./directRuntimeEvents";
 import { createClaudeDirectSession } from "../claudeCodeDirect/session";
 import { createClaudeCliProcessSpawner } from "../utils/claudeCliProcess";
 import { buildClaudeDirectFallbackCatalog } from "./directRuntimeCatalog";
@@ -171,18 +164,6 @@ function dedupe(values: readonly string[]): string[] {
   return out;
 }
 
-function usageNumber(usage: Record<string, unknown> | undefined, key: string) {
-  const value = usage?.[key];
-  return typeof value === "number" && Number.isFinite(value) ? value : 0;
-}
-
-function toolResultName(
-  toolNamesByCallId: Map<string, string>,
-  callId: string,
-): string {
-  return toolNamesByCallId.get(callId) || "tool";
-}
-
 /** Fields of the config that a live process cannot be talked out of. */
 function structuralSignature(config: ClaudeDirectSessionConfig): string {
   return JSON.stringify({
@@ -193,18 +174,6 @@ function structuralSignature(config: ClaudeDirectSessionConfig): string {
     effort: config.effort || "",
     mcpConfigJson: config.mcpConfigJson || "",
   });
-}
-
-function isSystemNoise(message: ClaudeCliInboundMessage): boolean {
-  if (message.type === "keep_alive" || message.type === "rate_limit_event") {
-    return true;
-  }
-  const subtype = (message as { subtype?: unknown }).subtype;
-  return (
-    message.type === "system" &&
-    typeof subtype === "string" &&
-    subtype.startsWith("hook_")
-  );
 }
 
 export function createClaudeDirectRuntime(
@@ -531,173 +500,24 @@ export function createClaudeDirectRuntime(
     };
 
     const entry = await ensureSession(request);
-    const toolNamesByCallId = new Map<string, string>();
-    let assistantRound = 0;
-    let reasoningSummary = "";
-    let streamedText = "";
-    let resultHandled = false;
-
-    const handleMessage = async (
-      message: ClaudeCliInboundMessage,
-    ): Promise<void> => {
-      if (isSystemNoise(message)) return;
-      // The session reports the closing `result` line as a message and again
-      // as `turn_completed`; the turn gets one usage event either way.
-      if (isClaudeCliResultMessage(message)) {
-        if (resultHandled) return;
-        resultHandled = true;
-      }
-      await emit({
-        type: "provider_event",
-        providerType: "claude_cli",
-        sessionId: entry.session.cliSessionId || undefined,
-        payload: message as Record<string, unknown>,
-        ts: now(),
-      });
-
-      if (isClaudeCliStreamEventMessage(message)) {
-        const event = message.event;
-        if (event.type === "message_start") {
-          assistantRound += 1;
-          reasoningSummary = "";
-          return;
-        }
-        if (event.type !== "content_block_delta") return;
-        if (event.delta.type === "text_delta") {
-          streamedText += event.delta.text;
-          await emit({ type: "message_delta", text: event.delta.text });
-          return;
-        }
-        if (event.delta.type === "thinking_delta") {
-          reasoningSummary += event.delta.thinking;
-          await emit({
-            type: "reasoning",
-            round: Math.max(assistantRound, 1),
-            summary: reasoningSummary,
-          });
-        }
-        return;
-      }
-
-      if (isClaudeCliAssistantMessage(message)) {
-        for (const block of message.message.content) {
-          if (!isClaudeToolUseBlock(block)) continue;
-          toolNamesByCallId.set(block.id, block.name);
-          await emit({
-            type: "tool_call",
-            callId: block.id,
-            name: block.name,
-            args: block.input,
-          });
-        }
-        return;
-      }
-
-      if (isClaudeCliUserMessage(message)) {
-        const content = message.message.content;
-        if (typeof content === "string") return;
-        for (const block of content) {
-          if (!isClaudeToolResultBlock(block)) continue;
-          await emit({
-            type: "tool_result",
-            callId: block.tool_use_id,
-            name: toolResultName(toolNamesByCallId, block.tool_use_id),
-            ok: block.is_error !== true,
-            content: block.content,
-            actionReceipts: [],
-          });
-        }
-        return;
-      }
-
-      if (message.type === "system") {
-        const status = (message as { status?: unknown }).status;
-        if (typeof status === "string" && status.trim()) {
-          await emit({ type: "status", text: status.trim() });
-        }
-        return;
-      }
-
-      if (isClaudeCliResultMessage(message)) {
-        const usage = message.usage as Record<string, unknown> | undefined;
-        const inputTokens = usageNumber(usage, "input_tokens");
-        const cacheCreation = usageNumber(usage, "cache_creation_input_tokens");
-        const cacheRead = usageNumber(usage, "cache_read_input_tokens");
-        await emit({
-          type: "usage",
-          inputTokens,
-          outputTokens: usageNumber(usage, "output_tokens"),
-          cacheCreationInputTokens: cacheCreation,
-          cacheReadInputTokens: cacheRead,
-          contextTokens: inputTokens + cacheCreation + cacheRead,
-          sessionId: message.session_id,
-          model: entry.config.model,
-        });
-      }
-    };
-
-    // Every session event is handled in the order it arrived. Without the
-    // queue two events that each await onEvent would interleave and the panel
-    // would see a tool_result before the tool_call that produced it.
-    let eventQueue: Promise<void> = Promise.resolve();
-    const unsubscribe = entry.session.subscribe(
-      (event: ClaudeDirectSessionEvent) => {
-        const handle = async (): Promise<void> => {
-          if (event.type === "message") {
-            await handleMessage(event.message);
-            return;
-          }
-          if (event.type === "turn_completed") {
-            await handleMessage(event.result);
-            return;
-          }
-          if (event.type === "permission_request") {
-            const permission = event.request;
-            const action: AgentPendingAction = {
-              toolName: permission.toolName,
-              title: permission.displayName || permission.toolName,
-              mode: "approval",
-              confirmLabel: "Allow",
-              cancelLabel: "Deny",
-              description:
-                permission.description ||
-                permission.decisionReason ||
-                undefined,
-              fields: [
-                {
-                  id: "input",
-                  type: "code_preview",
-                  label: permission.title || "Tool input",
-                  value: JSON.stringify(permission.input, null, 2),
-                  language: "json",
-                },
-              ],
-            };
-            registerPermissionPrompt(entry, permission.requestId, action, emit);
-            await emit({
-              type: "confirmation_required",
-              requestId: permission.requestId,
-              action,
-            });
-            return;
-          }
-          if (event.type === "permission_cancelled") {
-            coreRuntime.resolveConfirmation(event.requestId, false);
-            return;
-          }
-          if (event.type === "stderr" && event.text.trim()) {
-            await emit({ type: "status", text: event.text.trim() });
-          }
-        };
-        eventQueue = eventQueue.then(handle, handle);
+    const pipeline = createClaudeDirectEventPipeline({
+      emit,
+      now,
+      getSessionId: () => entry.session.cliSessionId,
+      model: entry.config.model,
+      onPermissionRequest: (requestId, action) =>
+        registerPermissionPrompt(entry, requestId, action, emit),
+      onPermissionCancelled: (requestId) => {
+        coreRuntime.resolveConfirmation(requestId, false);
       },
-    );
+    });
+    const unsubscribe = entry.session.subscribe(pipeline.handle);
 
     try {
       const result = await entry.session.runTurn(request.userText || "", {
         signal: rawParams.signal,
       });
-      await eventQueue;
+      await pipeline.drain();
       if (result.is_error) {
         return {
           kind: "fallback",
@@ -710,7 +530,7 @@ export function createClaudeDirectRuntime(
       }
       const text =
         (typeof result.result === "string" && result.result.trim()) ||
-        streamedText;
+        pipeline.getStreamedText();
       return { kind: "completed", runId, text, usedFallback: false };
     } finally {
       unsubscribe();
