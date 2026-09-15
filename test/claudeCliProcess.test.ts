@@ -321,6 +321,21 @@ describe("claude cli process", function () {
       assert.deepEqual(child.kills, [undefined, 0]);
     });
 
+    it("waits out the SDK grace period when no options are given", async function () {
+      const subprocess = createFakeSubprocess(() => ({ stayAlive: true }));
+      const spawner = createClaudeCliProcessSpawnerForTest(subprocess);
+      const handle = await spawner.spawn(spawnRequest());
+      const child = subprocess.children[0];
+      const terminated = handle.terminate();
+      // CLAUDE_CLI_TERMINATE_DEFAULTS.graceMs is 2 s, so nothing is signalled
+      // in the first fraction of a second.
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      assert.deepEqual(child.kills, []);
+      assert.isTrue(child.stdinClosed);
+      child.exit(0);
+      assert.equal((await terminated).reason, "terminated");
+    });
+
     it("terminates every live process the spawner owns", async function () {
       const subprocess = createFakeSubprocess(() => ({ stayAlive: true }));
       const spawner = createClaudeCliProcessSpawnerForTest(subprocess);
