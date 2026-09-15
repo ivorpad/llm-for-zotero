@@ -1,5 +1,6 @@
 import type { AgentRuntime } from "../agent/runtime";
 import type {
+  AgentConfirmationResolution,
   AgentEvent,
   AgentPendingAction,
   AgentRuntimeOutcome,
@@ -43,6 +44,13 @@ import {
 } from "./prefs";
 import { getClaudeRuntimeRootDir } from "./projectSkills";
 import type { ClaudePermissionMode } from "../shared/claudePermissionMode";
+import {
+  activateClaudeDirectMcpScope,
+  buildClaudeDirectMcpConfigJson,
+  buildClaudeDirectMcpReadToolMatcher,
+  resolveClaudeDirectMcpDeps,
+  type ClaudeDirectMcpDeps,
+} from "./directRuntimeMcp";
 
 /** Same shape as `ClaudeSlashCommandDescriptor`, kept local to avoid a cycle. */
 type DirectSlashCommand = {
@@ -80,6 +88,8 @@ export type ClaudeDirectRuntimeDeps = {
   /** Close delay after the last mount releases a conversation. */
   closeDelayMs?: number;
   generateSessionId?: () => string;
+  /** Zotero MCP wiring; the real server helpers are used when omitted. */
+  mcp?: Partial<ClaudeDirectMcpDeps>;
 };
 
 export type ClaudeDirectRuntime = AgentRuntimeLike & {
@@ -94,6 +104,8 @@ type PooledSession = {
   closeTimer: ReturnType<typeof setTimeout> | null;
   /** The `initialize` response start() handshaked for; no second round trip. */
   handshake: ClaudeCliInitializeResponse | null;
+  /** Releases the last turn's MCP scope; null when MCP is off or already cleared. */
+  clearMcpScope: (() => void) | null;
 };
 
 function defaultDataDir(): string | null {
@@ -182,6 +194,7 @@ export function createClaudeDirectRuntime(
 ): ClaudeDirectRuntime {
   const coreRuntime = deps.coreRuntime;
   const prefs = resolvePrefs(deps.prefs);
+  const mcp = resolveClaudeDirectMcpDeps(deps.mcp);
   const now = deps.now || (() => Date.now());
   const closeDelayMs =
     typeof deps.closeDelayMs === "number"
@@ -230,6 +243,8 @@ export function createClaudeDirectRuntime(
     if (!entry) return false;
     pool.delete(conversationKey);
     cancelCloseTimer(entry);
+    entry.clearMcpScope?.();
+    entry.clearMcpScope = null;
     const resumeId = entry.session.cliSessionId;
     if (resumeId) resumeIdByConversation.set(conversationKey, resumeId);
     try {
@@ -248,6 +263,26 @@ export function createClaudeDirectRuntime(
       entry.closeTimer = null;
       void closeSession(conversationKey);
     }, closeDelayMs);
+  };
+
+  /**
+   * The `--mcp-config` string that points the CLI at the plugin's Zotero MCP
+   * server, or undefined when the feature is off (the pre-MCP behavior). The
+   * scope header is the conversation-stable token, so a session started once
+   * keeps a valid header across every turn.
+   */
+  const buildMcpConfigJson = (
+    request: AgentRuntimeRequest,
+  ): string | undefined => {
+    if (!mcp.isEnabled()) return undefined;
+    const profileSignature = mcp.getProfileSignature();
+    return buildClaudeDirectMcpConfigJson(mcp, {
+      serverName: mcp.getServerName(profileSignature),
+      scopeToken: mcp.resolveScopeToken({
+        profileSignature,
+        conversationKey: request.conversationKey,
+      }),
+    });
   };
 
   const buildSessionConfig = (
@@ -281,6 +316,7 @@ export function createClaudeDirectRuntime(
       model: resolveClaudeBridgeModelForMetadata(request.model),
       effort: toClaudeDirectEffort(resolveClaudeEffortForRequest(request)),
       appendSystemPrompt,
+      mcpConfigJson: buildMcpConfigJson(request),
       preferredBinaryPath: prefs.getCliPath() || null,
     };
   };
@@ -302,6 +338,7 @@ export function createClaudeDirectRuntime(
       mounts: mountsFor(conversationKey),
       closeTimer: null,
       handshake: null,
+      clearMcpScope: null,
     };
     pool.set(conversationKey, entry);
     try {
@@ -501,14 +538,87 @@ export function createClaudeDirectRuntime(
       await rawParams.onEvent?.(event);
     };
 
+    // The channel the MCP server calls back on when a tool asks the user to
+    // confirm a write; it rides the same permission-card plumbing as the CLI.
+    const requestMcpConfirmation = async (
+      action: AgentPendingAction,
+    ): Promise<AgentConfirmationResolution> => {
+      if (rawParams.signal?.aborted) return { approved: false };
+      const requestId = `claude-direct-mcp-${now().toString(36)}-${runSequence}-${Math.random()
+        .toString(36)
+        .slice(2, 8)}`;
+      const pending = new Promise<AgentConfirmationResolution>((resolve) =>
+        coreRuntime.registerPendingConfirmation(requestId, resolve),
+      );
+      const abort = () => coreRuntime.resolveConfirmation(requestId, false);
+      rawParams.signal?.addEventListener("abort", abort, { once: true });
+      try {
+        await emit({ type: "confirmation_required", requestId, action });
+        const resolution = await pending;
+        await emit({ type: "confirmation_resolved", requestId, ...resolution });
+        return resolution;
+      } finally {
+        rawParams.signal?.removeEventListener("abort", abort);
+        coreRuntime.resolveConfirmation(requestId, false);
+      }
+    };
+
     const entry = await ensureSession(request);
+
+    // Give this turn the open paper, selected text and Zotero tools by
+    // registering its scope under the conversation-stable header the session
+    // already carries. Paper reads run without a card; writes still prompt.
+    const mcpEnabled = mcp.isEnabled();
+    let clearMcpScope: () => void = () => undefined;
+    let isReadMcpTool: (toolName: string) => boolean = () => false;
+    if (mcpEnabled) {
+      const profileSignature = mcp.getProfileSignature();
+      isReadMcpTool = buildClaudeDirectMcpReadToolMatcher(
+        mcp,
+        mcp.getServerName(profileSignature),
+      );
+      const scoped = activateClaudeDirectMcpScope(mcp, {
+        request,
+        profileSignature,
+        scopeToken: mcp.resolveScopeToken({
+          profileSignature,
+          conversationKey: request.conversationKey,
+        }),
+        publishHostEvent: emit,
+        requestInteraction: requestMcpConfirmation,
+      });
+      entry.clearMcpScope = scoped.clear;
+      clearMcpScope = scoped.clear;
+    }
+
+    // A read tool answered `allow` above never becomes a card, so its
+    // confirmation event is dropped before it reaches the panel.
+    const pipelineEmit: (event: AgentEvent) => Promise<void> = mcpEnabled
+      ? async (event) => {
+          if (
+            event.type === "confirmation_required" &&
+            isReadMcpTool(event.action.toolName)
+          ) {
+            return;
+          }
+          await emit(event);
+        }
+      : emit;
+
     const pipeline = createClaudeDirectEventPipeline({
-      emit,
+      emit: pipelineEmit,
       now,
       getSessionId: () => entry.session.cliSessionId,
       model: entry.config.model,
-      onPermissionRequest: (requestId, action) =>
-        registerPermissionPrompt(entry, requestId, action, emit),
+      onPermissionRequest: (requestId, action) => {
+        if (mcpEnabled && isReadMcpTool(action.toolName)) {
+          void entry.session.respondToPermission(requestId, {
+            behavior: "allow",
+          });
+          return;
+        }
+        registerPermissionPrompt(entry, requestId, action, emit);
+      },
       onPermissionCancelled: (requestId) => {
         coreRuntime.resolveConfirmation(requestId, false);
       },
@@ -535,6 +645,7 @@ export function createClaudeDirectRuntime(
         pipeline.getStreamedText();
       return { kind: "completed", runId, text, usedFallback: false };
     } finally {
+      clearMcpScope();
       unsubscribe();
     }
   };
