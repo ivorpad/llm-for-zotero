@@ -483,7 +483,7 @@ function requestPaperRefs(
   return [...listTurnPapersWithRoles(request.turnPaperScope, roles)];
 }
 
-function requestLocalDocuments(
+export function requestLocalDocuments(
   request: AgentRuntimeRequest,
 ): readonly LocalDocumentResource[] {
   return (request.localDocuments || []).map((entry) => entry.resource);
@@ -671,7 +671,46 @@ function buildAgentPermissionMetadata(): {
   return { permissionMode };
 }
 
-function buildPlanAwareClaudePermissionMetadata(
+export type ClaudeRequestEffort =
+  | "low"
+  | "medium"
+  | "high"
+  | "xhigh"
+  | "max"
+  | "auto";
+
+/**
+ * The effort the Claude runtimes send for a turn: an explicit
+ * `claudeEffortLevel` wins, otherwise the reasoning level, and a reasoning
+ * level of `default` means "let Claude decide".
+ */
+export function resolveClaudeEffortForRequest(
+  request: AgentRuntimeRequest,
+): ClaudeRequestEffort | undefined {
+  const reasoningLevel: string =
+    typeof request.reasoning?.level === "string" ? request.reasoning.level : "";
+  const claudeEffortLevel =
+    typeof request.claudeEffortLevel === "string"
+      ? request.claudeEffortLevel.trim().toLowerCase()
+      : "";
+  return claudeEffortLevel === "max" ||
+    claudeEffortLevel === "xhigh" ||
+    claudeEffortLevel === "high" ||
+    claudeEffortLevel === "medium" ||
+    claudeEffortLevel === "low"
+    ? claudeEffortLevel
+    : reasoningLevel === "xhigh"
+      ? "xhigh"
+      : reasoningLevel === "high" ||
+          reasoningLevel === "medium" ||
+          reasoningLevel === "low"
+        ? reasoningLevel
+        : reasoningLevel === "default"
+          ? "auto"
+          : undefined;
+}
+
+export function buildPlanAwareClaudePermissionMetadata(
   request: AgentRuntimeRequest,
 ): ReturnType<typeof buildAgentPermissionMetadata> {
   if (request.planContext?.phase === "planning") {
@@ -700,7 +739,7 @@ function buildClaudeBridgeNotesDirectoryInstruction(): string {
   ].join("\n");
 }
 
-function buildClaudeBridgeCustomInstruction(
+export function buildClaudeBridgeCustomInstruction(
   options: {
     rawPdfMode?: boolean;
   } = {},
@@ -724,7 +763,9 @@ function buildClaudeBridgeCustomInstruction(
     .join("\n\n");
 }
 
-function buildDocumentOutcomeInstruction(request: AgentRuntimeRequest): string {
+export function buildDocumentOutcomeInstruction(
+  request: AgentRuntimeRequest,
+): string {
   const policy = request.documentOutcomePolicy;
   if (!policy?.required) return "";
   const validation =
@@ -1076,30 +1117,7 @@ async function runExternalBridgeTurn(
   },
 ): Promise<AgentRuntimeOutcome> {
   const url = `${normalizeBaseUrl(baseUrl)}/run-turn`;
-  const reasoningLevel =
-    typeof params.request.reasoning?.level === "string"
-      ? params.request.reasoning.level
-      : "";
-  const claudeEffortLevel =
-    typeof params.request.claudeEffortLevel === "string"
-      ? params.request.claudeEffortLevel.trim().toLowerCase()
-      : "";
-  const effort =
-    claudeEffortLevel === "max" ||
-    claudeEffortLevel === "xhigh" ||
-    claudeEffortLevel === "high" ||
-    claudeEffortLevel === "medium" ||
-    claudeEffortLevel === "low"
-      ? claudeEffortLevel
-      : reasoningLevel === "xhigh"
-        ? "xhigh"
-        : reasoningLevel === "high" ||
-            reasoningLevel === "medium" ||
-            reasoningLevel === "low"
-          ? reasoningLevel
-          : reasoningLevel === "default"
-            ? "auto"
-            : undefined;
+  const effort = resolveClaudeEffortForRequest(params.request);
   const debugModeEnabled = false;
 
   const userTextRaw = params.request.userText || "";
