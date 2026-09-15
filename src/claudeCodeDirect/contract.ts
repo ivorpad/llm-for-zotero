@@ -538,7 +538,7 @@ export type ClaudeDirectSessionConfig = {
   mcpConfigJson?: string;
   preferredBinaryPath?: string | null;
   environment?: Record<string, string>;
-  /** How long `start()` waits for the `init` line. */
+  /** How long `start()` waits for the `initialize` response. */
   startTimeoutMs?: number;
 };
 
@@ -588,7 +588,8 @@ export type ClaudeDirectSessionEvent =
   | { type: "error"; error: ClaudeDirectError };
 
 export type ClaudeDirectStartResult = {
-  init: ClaudeCliInitMessage;
+  /** The CLI's answer to the `initialize` handshake sent right after spawn. */
+  initialize: ClaudeCliInitializeResponse;
   binary: ClaudeCliBinaryResolution;
   pid: number | null;
 };
@@ -596,12 +597,27 @@ export type ClaudeDirectStartResult = {
 export interface ClaudeDirectSession {
   readonly config: Readonly<ClaudeDirectSessionConfig>;
   readonly state: ClaudeDirectSessionState;
-  /** Session id reported by the CLI's init line; null before start. */
+  /**
+   * The CLI session id: the `--session-id` or `--resume` value from the
+   * config once started, replaced by the id the CLI reports in its `init`
+   * and `result` lines. Null before start.
+   */
   readonly cliSessionId: string | null;
-  /** Resolve the binary, spawn, and wait for the `init` line. */
+  /**
+   * Resolve the binary, spawn, send the `initialize` control request and
+   * resolve when its response arrives (within `startTimeoutMs`). The CLI
+   * writes its `system` / `init` line only when the first turn begins, so
+   * start() must not wait for it; that line is delivered as a `message`
+   * event when it comes.
+   */
   start(): Promise<ClaudeDirectStartResult>;
-  /** Send `initialize` and return its payload (models, commands, ...). */
-  initialize(): Promise<ClaudeCliInitializeResponse>;
+  /**
+   * The handshake response captured by start() (models, commands, ...).
+   * Sends a fresh `initialize` only when `force` is true.
+   */
+  initialize(options?: {
+    force?: boolean;
+  }): Promise<ClaudeCliInitializeResponse>;
   /**
    * Send one user turn and resolve with the `result` line that ends it.
    * Rejects with a ClaudeDirectError when the session is busy, closed,
@@ -704,4 +720,4 @@ export type ClaudeCliMessageSerializer = (
  * `src/claudeCodeDirect/session.ts`
  *   `createClaudeDirectSession: ClaudeDirectSessionFactory`
  */
-export const CLAUDE_DIRECT_CONTRACT_VERSION = 1 as const;
+export const CLAUDE_DIRECT_CONTRACT_VERSION = 2 as const;
