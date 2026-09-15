@@ -40,6 +40,17 @@ const baseConfig: ClaudeDirectSessionConfig = {
   startTimeoutMs: 2_000,
 };
 
+/** A `result` line of the shape the CLI writes at the end of a turn. */
+function resultLine(text: string): string {
+  return JSON.stringify({
+    type: "result",
+    subtype: "success",
+    is_error: false,
+    session_id: "2b729401-243a-427a-9749-74ee716d3591",
+    result: text,
+  });
+}
+
 function parseLine(line: string): Record<string, any> {
   return JSON.parse(line) as Record<string, any>;
 }
@@ -263,7 +274,11 @@ describe("claude direct session", function () {
       written.filter((line) => line.type === "control_request")[0].request,
       { subtype: "interrupt" },
     );
+    // The CLI still has the interrupted turn to finish.
+    assert.equal(session.state, "busy");
+    spawner.lastHandle().emitLine(resultLine("stopped"));
     assert.equal(session.state, "idle");
+    await session.close();
   });
 
   it("interrupts the turn when its abort signal fires", async function () {
@@ -278,6 +293,46 @@ describe("claude direct session", function () {
         .written.map(parseLine)
         .some((line) => line.request?.subtype === "interrupt"),
     );
+    assert.equal(session.state, "busy");
+    await session.close();
+  });
+
+  it("never lets an interrupted turn's result resolve the next turn", async function () {
+    const { session, spawner } = await startSession({ answerControls: true });
+    const handle = spawner.lastHandle();
+    const completed: Array<string | undefined> = [];
+    session.subscribe((event) => {
+      if (event.type === "turn_completed") completed.push(event.result.result);
+    });
+
+    const first = session.runTurn("one");
+    const interrupted = expectDirectError(first, "interrupted");
+    await session.interrupt();
+    await interrupted;
+    // Nothing else may run while the interrupted turn is still closing.
+    await expectDirectError(session.runTurn("too early"), "busy");
+
+    handle.emitLine(resultLine("interrupted turn"));
+    assert.equal(session.state, "idle");
+
+    const second = session.runTurn("two");
+    let settled = false;
+    void second.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.isFalse(settled, "the stale result must not resolve the new turn");
+
+    handle.emitLine(resultLine("second turn"));
+    const result = await second;
+    assert.equal(result.result, "second turn");
+    assert.deepEqual(completed, ["interrupted turn", "second turn"]);
+    await session.close();
   });
 
   it("changes model and permission mode through control requests", async function () {

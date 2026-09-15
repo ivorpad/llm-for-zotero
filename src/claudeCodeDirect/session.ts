@@ -45,6 +45,12 @@ import {
 } from "./protocol";
 
 const DEFAULT_START_TIMEOUT_MS = 30_000;
+/**
+ * An interrupted turn is still finished by the CLI, which writes its `result`
+ * line afterwards. This is how long the session waits for that line before it
+ * assumes the CLI will never send it.
+ */
+const INTERRUPTED_RESULT_GRACE_MS = 10_000;
 
 type PendingTurn = {
   resolve: (result: ClaudeCliResultMessage) => void;
@@ -113,6 +119,9 @@ class ClaudeDirectSessionImpl implements ClaudeDirectSession {
   private initMessage: ClaudeCliInitMessage | null = null;
   private initializeResponse: ClaudeCliInitializeResponse | null = null;
   private lastExit: ClaudeCliProcessExit | null = null;
+  /** Set while the `result` of an interrupted turn is still expected. */
+  private interruptedResultDeadline: number | null = null;
+  private interruptedResultTimer: ReturnType<typeof setTimeout> | null = null;
   private closePromise: Promise<ClaudeCliProcessExit | null> | null = null;
 
   constructor(
@@ -264,6 +273,12 @@ class ClaudeDirectSessionImpl implements ClaudeDirectSession {
     if (isClaudeCliResultMessage(message)) {
       this.sessionId = message.session_id || this.sessionId;
       const turn = this.pendingTurn;
+      // The line that closes an interrupted turn arrives with no turn waiting
+      // for it. It ends the busy state and is reported, but it must never
+      // resolve whatever turn runs next.
+      if (!turn && this.isAwaitingInterruptedResult()) {
+        this.forgetInterruptedResult();
+      }
       this.pendingTurn = null;
       turn?.release();
       if (this.currentState === "busy") this.setState("idle");
@@ -324,6 +339,7 @@ class ClaudeDirectSessionImpl implements ClaudeDirectSession {
   }
 
   private rejectPendingWork(error: ClaudeDirectError): void {
+    this.forgetInterruptedResult();
     const turn = this.pendingTurn;
     this.pendingTurn = null;
     if (turn) {
@@ -432,12 +448,8 @@ class ClaudeDirectSessionImpl implements ClaudeDirectSession {
     this.setState("busy");
     return new Promise<ClaudeCliResultMessage>((resolve, reject) => {
       const onAbort = () => {
-        const turn = this.pendingTurn;
-        this.pendingTurn = null;
-        turn?.release();
-        if (this.currentState === "busy") this.setState("idle");
+        this.abandonTurn("The turn was aborted");
         void this.sendInterrupt();
-        reject(new ClaudeDirectError("interrupted", "The turn was aborted"));
       };
       if (signal) signal.addEventListener("abort", onAbort, { once: true });
       this.pendingTurn = {
@@ -448,6 +460,46 @@ class ClaudeDirectSessionImpl implements ClaudeDirectSession {
         },
       };
     });
+  }
+
+  /**
+   * Gives up on the turn in flight without pretending the CLI is free: the
+   * session stays busy until the interrupted turn's `result` line arrives, so
+   * the next turn cannot be resolved by it.
+   */
+  private abandonTurn(reason: string): void {
+    const turn = this.pendingTurn;
+    this.pendingTurn = null;
+    turn?.release();
+    this.awaitInterruptedResult();
+    turn?.reject(new ClaudeDirectError("interrupted", reason));
+  }
+
+  private nowMs(): number {
+    return (this.deps.now ?? Date.now)();
+  }
+
+  private awaitInterruptedResult(): void {
+    this.forgetInterruptedResult();
+    this.interruptedResultDeadline = this.nowMs() + INTERRUPTED_RESULT_GRACE_MS;
+    this.interruptedResultTimer = setTimeout(() => {
+      this.interruptedResultTimer = null;
+      this.interruptedResultDeadline = null;
+      if (this.currentState === "busy") this.setState("idle");
+    }, INTERRUPTED_RESULT_GRACE_MS);
+  }
+
+  private isAwaitingInterruptedResult(): boolean {
+    if (this.interruptedResultDeadline === null) return false;
+    return this.nowMs() <= this.interruptedResultDeadline;
+  }
+
+  private forgetInterruptedResult(): void {
+    this.interruptedResultDeadline = null;
+    if (this.interruptedResultTimer !== null) {
+      clearTimeout(this.interruptedResultTimer);
+      this.interruptedResultTimer = null;
+    }
   }
 
   private async sendInterrupt(): Promise<void> {
@@ -485,12 +537,7 @@ class ClaudeDirectSessionImpl implements ClaudeDirectSession {
     const turn = this.pendingTurn;
     await this.sendControlRequest({ subtype: "interrupt" });
     if (turn && this.pendingTurn === turn) {
-      this.pendingTurn = null;
-      turn.release();
-      if (this.currentState === "busy") this.setState("idle");
-      turn.reject(
-        new ClaudeDirectError("interrupted", "The turn was interrupted"),
-      );
+      this.abandonTurn("The turn was interrupted");
     }
   }
 
