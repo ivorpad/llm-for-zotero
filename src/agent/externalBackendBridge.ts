@@ -1369,7 +1369,7 @@ function resolveFallbackLibraryId(
   );
 }
 
-function buildClaudeZoteroMcpScope(
+export function buildClaudeZoteroMcpScope(
   request: AgentRuntimeRequest,
   profileSignature: string,
 ): ZoteroMcpActiveScope {
