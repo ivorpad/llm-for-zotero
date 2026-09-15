@@ -563,21 +563,24 @@ export function createClaudeDirectRuntime(
       }
     };
 
-    const entry = await ensureSession(request);
-
-    // Give this turn the open paper, selected text and Zotero tools by
-    // registering its scope under the conversation-stable header the session
-    // already carries. Paper reads run without a card; writes still prompt.
+    // Register this turn's scope BEFORE the CLI process exists. The CLI asks
+    // the MCP server for `tools/list` once, during its own startup, and caches
+    // the answer for the life of the process; the server only returns tools a
+    // registered scope makes visible. Registering after the spawn therefore
+    // yields a session with zero Zotero tools, which is what left the model
+    // with no way to see the open paper or the selected passage.
     const mcpEnabled = mcp.isEnabled();
     let clearMcpScope: () => void = () => undefined;
     let isReadMcpTool: (toolName: string) => boolean = () => false;
+    let scopedMcp: ReturnType<typeof activateClaudeDirectMcpScope> | null =
+      null;
     if (mcpEnabled) {
       const profileSignature = mcp.getProfileSignature();
       isReadMcpTool = buildClaudeDirectMcpReadToolMatcher(
         mcp,
         mcp.getServerName(profileSignature),
       );
-      const scoped = activateClaudeDirectMcpScope(mcp, {
+      scopedMcp = activateClaudeDirectMcpScope(mcp, {
         request,
         profileSignature,
         scopeToken: mcp.resolveScopeToken({
@@ -587,9 +590,11 @@ export function createClaudeDirectRuntime(
         publishHostEvent: emit,
         requestInteraction: requestMcpConfirmation,
       });
-      entry.clearMcpScope = scoped.clear;
-      clearMcpScope = scoped.clear;
+      clearMcpScope = scopedMcp.clear;
     }
+
+    const entry = await ensureSession(request);
+    if (scopedMcp) entry.clearMcpScope = scopedMcp.clear;
 
     // A read tool answered `allow` above never becomes a card, so its
     // confirmation event is dropped before it reaches the panel.
