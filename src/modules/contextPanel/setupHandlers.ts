@@ -1902,6 +1902,14 @@ export function setupHandlers(
         system: "claude_code",
       },
       {
+        key: `${config.prefsPrefix}.claudeCodeRuntime`,
+        system: "claude_code",
+      },
+      {
+        key: `${config.prefsPrefix}.claudeCodeCliPath`,
+        system: "claude_code",
+      },
+      {
         key: `${config.prefsPrefix}.codexAppServerPermissionState`,
         system: "codex",
       },
