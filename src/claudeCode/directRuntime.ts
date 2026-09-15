@@ -535,11 +535,18 @@ export function createClaudeDirectRuntime(
     let assistantRound = 0;
     let reasoningSummary = "";
     let streamedText = "";
+    let resultHandled = false;
 
     const handleMessage = async (
       message: ClaudeCliInboundMessage,
     ): Promise<void> => {
       if (isSystemNoise(message)) return;
+      // The session reports the closing `result` line as a message and again
+      // as `turn_completed`; the turn gets one usage event either way.
+      if (isClaudeCliResultMessage(message)) {
+        if (resultHandled) return;
+        resultHandled = true;
+      }
       await emit({
         type: "provider_event",
         providerType: "claude_cli",
@@ -629,12 +636,19 @@ export function createClaudeDirectRuntime(
       }
     };
 
-    const pendingEmits: Array<Promise<void>> = [];
+    // Every session event is handled in the order it arrived. Without the
+    // queue two events that each await onEvent would interleave and the panel
+    // would see a tool_result before the tool_call that produced it.
+    let eventQueue: Promise<void> = Promise.resolve();
     const unsubscribe = entry.session.subscribe(
       (event: ClaudeDirectSessionEvent) => {
-        const work = (async () => {
+        const handle = async (): Promise<void> => {
           if (event.type === "message") {
             await handleMessage(event.message);
+            return;
+          }
+          if (event.type === "turn_completed") {
+            await handleMessage(event.result);
             return;
           }
           if (event.type === "permission_request") {
@@ -674,8 +688,8 @@ export function createClaudeDirectRuntime(
           if (event.type === "stderr" && event.text.trim()) {
             await emit({ type: "status", text: event.text.trim() });
           }
-        })();
-        pendingEmits.push(work);
+        };
+        eventQueue = eventQueue.then(handle, handle);
       },
     );
 
@@ -683,7 +697,7 @@ export function createClaudeDirectRuntime(
       const result = await entry.session.runTurn(request.userText || "", {
         signal: rawParams.signal,
       });
-      await Promise.all(pendingEmits);
+      await eventQueue;
       if (result.is_error) {
         return {
           kind: "fallback",
