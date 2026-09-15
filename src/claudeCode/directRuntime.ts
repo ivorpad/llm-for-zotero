@@ -44,6 +44,7 @@ import {
 } from "./prefs";
 import { getClaudeRuntimeRootDir } from "./projectSkills";
 import type { ClaudePermissionMode } from "../shared/claudePermissionMode";
+import { buildClaudeDirectTurnText } from "./directRuntimeContext";
 import {
   activateClaudeDirectMcpScope,
   buildClaudeDirectMcpConfigJson,
@@ -631,9 +632,12 @@ export function createClaudeDirectRuntime(
     const unsubscribe = entry.session.subscribe(pipeline.handle);
 
     try {
-      const result = await entry.session.runTurn(request.userText || "", {
-        signal: rawParams.signal,
-      });
+      const result = await entry.session.runTurn(
+        buildClaudeDirectTurnText(request),
+        {
+          signal: rawParams.signal,
+        },
+      );
       await pipeline.drain();
       if (result.is_error) {
         return {
