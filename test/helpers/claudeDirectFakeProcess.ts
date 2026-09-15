@@ -169,9 +169,11 @@ export type FakeClaudeSpawnerOptions = {
   resolveError?: unknown;
   /** spawn() rejects with this. */
   spawnError?: unknown;
-  /** Replayed once the session has subscribed, so `start()` sees an init line. */
-  linesOnSpawn?: readonly string[];
-  /** Scripts the CLI's answer to a line the session wrote. */
+  /**
+   * Scripts the CLI's answer to a line the session wrote. A started session
+   * needs at least an answer to the `initialize` control request, because the
+   * CLI sends nothing at all until it is asked something.
+   */
   onWrite?: (line: string, handle: FakeClaudeHandle) => void;
 };
 
@@ -218,10 +220,6 @@ export function createFakeClaudeSpawner(
       );
       handles.push(handle);
       live.add(handle);
-      if (options.linesOnSpawn?.length) {
-        const lines = options.linesOnSpawn;
-        setTimeout(() => handle.emitLines(lines), 0);
-      }
       return handle;
     },
     liveProcesses() {
