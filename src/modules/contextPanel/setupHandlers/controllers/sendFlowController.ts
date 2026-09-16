@@ -108,6 +108,9 @@ type SendFlowControllerDeps = {
   closeSlashMenu: () => void;
   closePaperPicker: () => void;
   getSelectedTextContextEntries: (itemId: number) => SelectedTextContext[];
+  // Attaches the reader's live selection when the turn carries no text context
+  // of its own, so a highlight plus "translate" works without a separate click.
+  autoAttachReaderSelection?: (conversationKey: number) => Promise<void>;
   resolveSelectedTextAnchors?: (params: {
     selectedTextContexts: SelectedTextContext[];
     paperContexts?: PaperContextRef[];
@@ -340,6 +343,10 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
           ? resolveSkillDirectiveText(rawSubmittedText, getAllSkills())
           : { text: rawSubmittedText };
       const text = codexNativeSkillText.text;
+      if (deps.autoAttachReaderSelection) {
+        await deps.autoAttachReaderSelection(textContextConversationKey);
+        if (!operationIsActive()) return;
+      }
       const selectedContexts = deps.getSelectedTextContextEntries(
         textContextConversationKey,
       );

@@ -1076,6 +1076,48 @@ describe("sendFlowController", function () {
     assert.deepEqual(sentOptions.resolvedSelectedTextAnchors, [anchor]);
   });
 
+  it("sends a reader highlight the user never clicked Add Text for", async function () {
+    const highlighted: SelectedTextContext = {
+      text: "the passage the user highlighted",
+      source: "pdf",
+      contextItemId: 34,
+    };
+    const attached: SelectedTextContext[] = [];
+    let sentOptions: any;
+    const { controller } = createBaseDeps({
+      getSelectedTextContextEntries: () => attached,
+      autoAttachReaderSelection: async () => {
+        attached.push(highlighted);
+      },
+      sendQuestion: async (options: unknown) => {
+        sentOptions = options;
+      },
+    });
+
+    await controller.doSend();
+
+    assert.deepEqual(sentOptions.selectedTextContexts, [highlighted]);
+    assert.deepEqual(sentOptions.selectedTexts, [highlighted.text]);
+  });
+
+  it("reads text contexts only after the reader fallback has run", async function () {
+    const order: string[] = [];
+    const { controller } = createBaseDeps({
+      getSelectedTextContextEntries: () => {
+        order.push("read");
+        return [];
+      },
+      autoAttachReaderSelection: async () => {
+        order.push("auto-attach");
+      },
+    });
+
+    await controller.doSend();
+
+    assert.equal(order[0], "auto-attach");
+    assert.equal(order[1], "read");
+  });
+
   it("passes input mode to the screenshot gate and omits images for text-only mode", async function () {
     let screenshotGateArgs:
       | {

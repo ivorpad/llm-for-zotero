@@ -225,6 +225,7 @@ import {
   setSelectedTextContextEntries,
   setSelectedTextExpandedIndex,
 } from "./contextResolution";
+import { autoAttachReaderSelection } from "./autoReaderSelection";
 import {
   isTextLikeAttachmentSourceMode,
   resolvePaperContextRefFromAttachment,
@@ -6953,6 +6954,26 @@ export function setupHandlers(
     closeSlashMenu,
     closePaperPicker,
     getSelectedTextContextEntries,
+    autoAttachReaderSelection: async (conversationKey) => {
+      const panelRoot = body.querySelector("#llm-main") as HTMLElement | null;
+      try {
+        await autoAttachReaderSelection({
+          body,
+          conversationKey,
+          isGlobalConversation:
+            panelRoot?.dataset?.conversationKind === "global",
+          log: (message, ...args) => {
+            ztoolkit.log(message, ...args);
+          },
+        });
+      } catch (error) {
+        // A reader that cannot report its selection must not block the send.
+        ztoolkit.log(
+          "LLM autoAddText: reader selection fallback failed",
+          error,
+        );
+      }
+    },
     resolveSelectedTextAnchors,
     getSelectedPaperContexts: (itemId) =>
       getManualPaperContextsForItem(
