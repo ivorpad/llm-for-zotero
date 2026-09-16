@@ -40,6 +40,10 @@ export type IncludeReaderSelectedTextInput = {
   reader?: any | null;
   paperContext?: PaperContextRef | null;
   initialLocation?: SelectedTextPageLocation | null;
+  // Set when the inclusion is not a direct user gesture (the send-time
+  // fallback). The panel status line belongs to whatever triggered the
+  // inclusion, so leave it and the composer focus alone.
+  suppressFeedback?: boolean;
   log?: (message: string, ...args: unknown[]) => void;
 };
 
@@ -181,7 +185,9 @@ export async function includeReaderSelectedText(
   }
 
   const selectedText = normalizeSelectedText(input.selectedText || "");
-  const status = input.body.querySelector("#llm-status") as HTMLElement | null;
+  const status = input.suppressFeedback
+    ? null
+    : (input.body.querySelector("#llm-status") as HTMLElement | null);
   if (!selectedText) {
     if (status) {
       setStatus(status, t("Select text in the reader first"), "warning");
@@ -237,10 +243,12 @@ export async function includeReaderSelectedText(
   if (status) {
     setStatus(status, t("Selected text included"), "ready");
   }
-  const inputEl = input.body.querySelector(
-    "#llm-input",
-  ) as HTMLTextAreaElement | null;
-  inputEl?.focus({ preventScroll: true });
+  if (!input.suppressFeedback) {
+    const inputEl = input.body.querySelector(
+      "#llm-input",
+    ) as HTMLTextAreaElement | null;
+    inputEl?.focus({ preventScroll: true });
+  }
 
   if (hasPageLocation(initialLocation) || !input.reader) {
     return {
